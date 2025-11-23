@@ -1,5 +1,7 @@
+import { ZERO_ADDRESS } from './constants';
+
 // UUPSTokenV2 Contract Configuration
-export const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as `0x${string}` || '0x0000000000000000000000000000000000000000' as `0x${string}`;
+export const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as `0x${string}` || ZERO_ADDRESS as `0x${string}`;
 
 export const CONTRACT_ABI = [
   {

@@ -5,6 +5,7 @@ import { WagmiProvider, useReadContract, useWatchContractEvent } from 'wagmi';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { config } from '@/lib/wagmi';
 import { CONTRACT_ADDRESS, CONTRACT_ABI } from '@/lib/contract';
+import { ZERO_ADDRESS } from '@/lib/constants';
 import { OrbScene } from './OrbScene';
 import { HUD } from './HUD';
 import { soundManager } from '@/lib/soundManager';
@@ -45,7 +46,7 @@ function OrbContent() {
     onLogs(logs) {
       logs.forEach((log) => {
         // Check if it's a burn (to address is 0x0)
-        if (log.args.to === '0x0000000000000000000000000000000000000000') {
+        if (log.args.to === ZERO_ADDRESS) {
           const amount = Number(log.args.value || 0n);
           handleBurn(amount);
         }
