@@ -11,6 +11,21 @@ import "../interfaces/IDEXAggregator.sol";
 import "../interfaces/ICrossChain.sol";
 import "../interfaces/IOracle.sol";
 
+/// @dev Interface for DEX adapters
+interface IDEXAdapter {
+    struct SwapParams {
+        address tokenIn;
+        address tokenOut;
+        uint256 amountIn;
+        uint256 minAmountOut;
+        address recipient;
+        bytes extraData;
+    }
+
+    function swap(SwapParams calldata params) external returns (uint256 amountOut);
+    function getQuote(address tokenIn, address tokenOut, uint256 amountIn) external returns (uint256 amountOut);
+}
+
 /*//////////////////////////////////////////////////////////////
                     CROSS-CHAIN DEX ROUTER
 //////////////////////////////////////////////////////////////*/
@@ -649,9 +664,16 @@ contract CrossChainDEXRouter is
             extraData: ""
         });
 
-        // Get quote from adapter (simplified - real implementation would call adapter)
+        // Get quote from adapter
+        uint256 quotedAmount;
+        try IDEXAdapter(adapter).getQuote(tokenIn, tokenOut, amountIn) returns (uint256 amount) {
+            quotedAmount = amount;
+        } catch {
+            quotedAmount = 0;
+        }
+
         quote = SwapQuote({
-            amountOut: 0, // Would be populated by adapter
+            amountOut: quotedAmount,
             gasEstimate: 150000,
             priceImpact: 0,
             routes: routes
@@ -675,14 +697,16 @@ contract CrossChainDEXRouter is
         IERC20(route.tokenIn).forceApprove(adapter, amountIn);
 
         // Call adapter's swap function
-        // In a real implementation, this would delegate to the adapter
-        // For now, return a placeholder
-        amountOut = amountIn; // Placeholder
+        IDEXAdapter.SwapParams memory params = IDEXAdapter.SwapParams({
+            tokenIn: route.tokenIn,
+            tokenOut: route.tokenOut,
+            amountIn: amountIn,
+            minAmountOut: 0, // Caller is responsible for slippage protection
+            recipient: recipient,
+            extraData: route.extraData
+        });
 
-        // Transfer output to recipient
-        if (recipient != address(this)) {
-            IERC20(route.tokenOut).safeTransfer(recipient, amountOut);
-        }
+        amountOut = IDEXAdapter(adapter).swap(params);
     }
 
     /// @dev Validate price impact against oracle
