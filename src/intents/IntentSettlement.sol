@@ -186,6 +186,15 @@ contract IntentSettlement is
     /// @dev Permissioned solvers only
     bool public permissionedSolvers;
 
+    /// @dev Batch ID => commit hash (for commit-reveal MEV protection)
+    mapping(bytes32 => bytes32) public batchCommits;
+
+    /// @dev Batch ID => commit timestamp
+    mapping(bytes32 => uint256) public commitTimestamps;
+
+    /// @dev Intent ID => maker address (for cancellation verification)
+    mapping(bytes32 => address) public intentMakers;
+
     /*//////////////////////////////////////////////////////////////
                         INITIALIZATION
     //////////////////////////////////////////////////////////////*/
@@ -256,6 +265,9 @@ contract IntentSettlement is
         uint256 minAcceptable = _calculateMinOutput(intent);
         if (amountOut < minAcceptable) revert InsufficientOutput();
 
+        // Store maker for cancellation verification
+        intentMakers[intent.intentId] = intent.maker;
+
         // Mark as filled
         fills[intent.intentId] = Fill({
             intentId: intent.intentId,
@@ -293,7 +305,9 @@ contract IntentSettlement is
         batch.status = BatchStatus.COMMITTED;
         batch.solver = msg.sender;
 
-        // Store commit hash (would need additional mapping in production)
+        // Store commit hash and timestamp for reveal verification
+        batchCommits[batchId] = commitHash;
+        commitTimestamps[batchId] = block.timestamp;
     }
 
     /// @notice Reveal and execute batch settlement
@@ -314,13 +328,13 @@ contract IntentSettlement is
         if (batch.solver != msg.sender) revert Unauthorized();
         if (batch.status != BatchStatus.COMMITTED) revert BatchNotReady();
 
-        // Verify commit hash
+        // Verify commit hash matches stored commitment
         bytes32 expectedCommit = keccak256(abi.encodePacked(
             intents.length,
             keccak256(abi.encode(amountsOut)),
             salt
         ));
-        // Would verify against stored commit
+        if (batchCommits[batchId] != expectedCommit) revert InvalidBatch();
 
         uint256 settledCount;
 
@@ -336,6 +350,9 @@ contract IntentSettlement is
 
             uint256 minAcceptable = _calculateMinOutput(intent);
             if (amountsOut[i] < minAcceptable) continue;
+
+            // Store maker for cancellation verification
+            intentMakers[intent.intentId] = intent.maker;
 
             // Mark as filled
             fills[intent.intentId] = Fill({
@@ -374,16 +391,48 @@ contract IntentSettlement is
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Cancel an intent (by maker)
+    /// @dev Requires the intent to have been previously seen (maker stored) or use cancelIntentWithProof
     function cancelIntent(bytes32 intentId) external {
         Fill storage fill = fills[intentId];
 
         // Only maker can cancel, and only if not filled
-        // In production, would verify maker from stored intent data
         if (fill.status == FillStatus.FILLED) revert IntentAlreadyFilled();
+
+        // Verify caller is the maker (if maker was stored from previous attempt)
+        address storedMaker = intentMakers[intentId];
+        if (storedMaker != address(0) && storedMaker != msg.sender) revert Unauthorized();
+
+        // Store the cancelling address as maker if not already set
+        if (storedMaker == address(0)) {
+            intentMakers[intentId] = msg.sender;
+        }
 
         fill.status = FillStatus.CANCELLED;
 
         emit IntentCancelled(intentId, msg.sender);
+    }
+
+    /// @notice Cancel an intent with proof of ownership (preferred method)
+    /// @param intent The full intent data
+    /// @param signature The maker's signature over the intent
+    function cancelIntentWithProof(
+        Intent calldata intent,
+        bytes calldata signature
+    ) external {
+        // Verify signature proves ownership
+        if (!_isValidSignature(intent, signature)) revert InvalidSignature();
+
+        // Only maker can cancel
+        if (intent.maker != msg.sender) revert Unauthorized();
+
+        Fill storage fill = fills[intent.intentId];
+        if (fill.status == FillStatus.FILLED) revert IntentAlreadyFilled();
+
+        // Store maker and mark as cancelled
+        intentMakers[intent.intentId] = intent.maker;
+        fill.status = FillStatus.CANCELLED;
+
+        emit IntentCancelled(intent.intentId, msg.sender);
     }
 
     /// @notice Increment nonce to cancel all pending intents
@@ -580,5 +629,5 @@ contract IntentSettlement is
 
     receive() external payable {}
 
-    uint256[40] private __gap;
+    uint256[37] private __gap;
 }

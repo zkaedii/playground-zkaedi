@@ -112,6 +112,8 @@ contract CrossChainReceiverHub is
         uint256 chainId,
         bytes32 remote
     );
+    event MessageHandlerUpdated(bytes4 indexed selector, address indexed handler);
+    event DefaultHandlerUpdated(address indexed oldHandler, address indexed newHandler);
 
     /*//////////////////////////////////////////////////////////////
                             STORAGE
@@ -612,10 +614,13 @@ contract CrossChainReceiverHub is
 
     function setMessageHandler(bytes4 selector, address handler) external onlyOwner {
         messageHandlers[selector] = handler;
+        emit MessageHandlerUpdated(selector, handler);
     }
 
     function setDefaultHandler(address handler) external onlyOwner {
+        address oldHandler = defaultHandler;
         defaultHandler = handler;
+        emit DefaultHandlerUpdated(oldHandler, handler);
     }
 
     function setChainIdMappings(

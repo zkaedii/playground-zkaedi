@@ -113,6 +113,7 @@ contract OracleGuard is OwnableUpgradeable, UUPSUpgradeable {
     );
     event CircuitBreakerReset(address indexed base, address indexed quote);
     event ConfigUpdated(address indexed base, address indexed quote);
+    event OraclesUpdated(address indexed aggregator, address indexed twap);
 
     /*//////////////////////////////////////////////////////////////
                             STORAGE
@@ -157,11 +158,16 @@ contract OracleGuard is OwnableUpgradeable, UUPSUpgradeable {
         address _oracleAggregator,
         address _twapOracle
     ) external initializer {
+        if (_oracleAggregator == address(0)) revert InvalidConfig();
+        // TWAP oracle can be zero (optional)
+
         __Ownable_init(msg.sender);
         __UUPSUpgradeable_init();
 
         oracleAggregator = ISmartOracle(_oracleAggregator);
         twapOracle = ISmartOracle(_twapOracle);
+
+        emit OraclesUpdated(_oracleAggregator, _twapOracle);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -510,8 +516,13 @@ contract OracleGuard is OwnableUpgradeable, UUPSUpgradeable {
 
     /// @notice Update oracle addresses
     function setOracles(address _aggregator, address _twap) external onlyOwner {
+        if (_aggregator == address(0)) revert InvalidConfig();
+        // TWAP oracle can be zero (optional)
+
         oracleAggregator = ISmartOracle(_aggregator);
         twapOracle = ISmartOracle(_twap);
+
+        emit OraclesUpdated(_aggregator, _twap);
     }
 
     /*//////////////////////////////////////////////////////////////

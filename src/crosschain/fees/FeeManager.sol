@@ -104,6 +104,8 @@ contract FeeManager is OwnableUpgradeable, UUPSUpgradeable {
     );
     event GasPriceUpdated(uint256 indexed chainId, uint256 gasPrice);
     event FeeConfigUpdated(uint256 indexed chainId, FeeType feeType);
+    event DistributionUpdated(address treasury, address stakers, address referrer);
+    event GasOracleUpdated(address indexed oldOracle, address indexed newOracle);
 
     /*//////////////////////////////////////////////////////////////
                             STORAGE
@@ -152,6 +154,8 @@ contract FeeManager is OwnableUpgradeable, UUPSUpgradeable {
         address _treasury,
         address _feeToken
     ) external initializer {
+        if (_treasury == address(0)) revert InvalidFeeConfig();
+
         __Ownable_init(msg.sender);
         __UUPSUpgradeable_init();
 
@@ -166,6 +170,8 @@ contract FeeManager is OwnableUpgradeable, UUPSUpgradeable {
             stakersShare: 3000,   // 30%
             referrerShare: 0
         });
+
+        emit DistributionUpdated(_treasury, address(0), address(0));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -442,18 +448,23 @@ contract FeeManager is OwnableUpgradeable, UUPSUpgradeable {
         ChainGasConfig calldata config
     ) external onlyOwner {
         chainGasConfigs[chainId] = config;
+        emit GasPriceUpdated(chainId, config.gasPrice);
     }
 
     function setFeeDistribution(FeeDistribution calldata _distribution) external onlyOwner {
+        if (_distribution.treasury == address(0)) revert InvalidFeeConfig();
         require(
             _distribution.treasuryShare + _distribution.stakersShare + _distribution.referrerShare <= 10000,
             "Shares exceed 100%"
         );
         feeDistribution = _distribution;
+        emit DistributionUpdated(_distribution.treasury, _distribution.stakers, _distribution.referrer);
     }
 
     function setGasOracle(address _oracle) external onlyOwner {
+        address oldOracle = gasOracle;
         gasOracle = _oracle;
+        emit GasOracleUpdated(oldOracle, _oracle);
     }
 
     function setProtocolEndpoint(uint8 protocol, address endpoint) external onlyOwner {
