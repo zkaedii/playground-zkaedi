@@ -402,21 +402,25 @@ contract FeeManager is OwnableUpgradeable, UUPSUpgradeable {
         uint256[] calldata l1DataFees
     ) external {
         require(msg.sender == gasOracle || msg.sender == owner(), "Not authorized");
+        uint256 len = chainIds.length;
         require(
-            chainIds.length == gasPrices.length &&
-            gasPrices.length == priorityFees.length &&
-            priorityFees.length == l1DataFees.length,
+            len == gasPrices.length &&
+            len == priorityFees.length &&
+            len == l1DataFees.length,
             "Length mismatch"
         );
 
-        for (uint256 i; i < chainIds.length; ++i) {
-            ChainGasConfig storage config = chainGasConfigs[chainIds[i]];
-            config.gasPrice = gasPrices[i];
-            config.priorityFee = priorityFees[i];
-            config.l1DataFee = l1DataFees[i];
-            config.gasPriceUpdatedAt = block.timestamp;
+        uint256 currentTimestamp = block.timestamp;
+        unchecked {
+            for (uint256 i; i < len; ++i) {
+                ChainGasConfig storage config = chainGasConfigs[chainIds[i]];
+                config.gasPrice = gasPrices[i];
+                config.priorityFee = priorityFees[i];
+                config.l1DataFee = l1DataFees[i];
+                config.gasPriceUpdatedAt = currentTimestamp;
 
-            emit GasPriceUpdated(chainIds[i], gasPrices[i]);
+                emit GasPriceUpdated(chainIds[i], gasPrices[i]);
+            }
         }
     }
 

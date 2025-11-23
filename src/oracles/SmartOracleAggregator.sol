@@ -140,21 +140,24 @@ contract SmartOracleAggregator is
         bytes32 pairHash = _getPairHash(base, quote);
         OracleConfig[] storage configs = _oracles[pairHash];
 
-        if (configs.length >= MAX_ORACLES_PER_PAIR) revert MaxOraclesReached();
+        uint256 configsLen = configs.length;
+        if (configsLen >= MAX_ORACLES_PER_PAIR) revert MaxOraclesReached();
 
         // Insert in priority order
-        uint256 insertIdx = configs.length;
-        for (uint256 i; i < configs.length; ++i) {
-            if (config.priority < configs[i].priority) {
-                insertIdx = i;
-                break;
+        uint256 insertIdx = configsLen;
+        unchecked {
+            for (uint256 i; i < configsLen; ++i) {
+                if (config.priority < configs[i].priority) {
+                    insertIdx = i;
+                    break;
+                }
             }
-        }
 
-        // Shift elements and insert
-        configs.push();
-        for (uint256 i = configs.length - 1; i > insertIdx; --i) {
-            configs[i] = configs[i - 1];
+            // Shift elements and insert
+            configs.push();
+            for (uint256 i = configsLen; i > insertIdx; --i) {
+                configs[i] = configs[i - 1];
+            }
         }
         configs[insertIdx] = config;
 
@@ -170,11 +173,14 @@ contract SmartOracleAggregator is
         bytes32 pairHash = _getPairHash(base, quote);
         OracleConfig[] storage configs = _oracles[pairHash];
 
-        for (uint256 i; i < configs.length; ++i) {
-            if (configs[i].oracle == oracle) {
-                configs[i].isActive = false;
-                emit OracleDeactivated(base, quote, oracle);
-                return;
+        uint256 len = configs.length;
+        unchecked {
+            for (uint256 i; i < len; ++i) {
+                if (configs[i].oracle == oracle) {
+                    configs[i].isActive = false;
+                    emit OracleDeactivated(base, quote, oracle);
+                    return;
+                }
             }
         }
     }
@@ -224,22 +230,25 @@ contract SmartOracleAggregator is
         bytes32 pairHash = _getPairHash(base, quote);
         OracleConfig[] storage configs = _oracles[pairHash];
 
-        if (configs.length == 0) revert NoPriceFeed();
+        uint256 configsLen = configs.length;
+        if (configsLen == 0) revert NoPriceFeed();
 
         // Try each oracle in priority order
-        for (uint256 i; i < configs.length; ++i) {
-            OracleConfig storage config = configs[i];
+        unchecked {
+            for (uint256 i; i < configsLen; ++i) {
+                OracleConfig storage config = configs[i];
 
-            if (!config.isActive) continue;
+                if (!config.isActive) continue;
 
-            try this.fetchOraclePrice(config, base, quote, maxAge) returns (PriceData memory result) {
-                // Validate price is reasonable
-                if (result.price > 0 && result.timestamp > 0) {
-                    return result;
+                try this.fetchOraclePrice(config, base, quote, maxAge) returns (PriceData memory result) {
+                    // Validate price is reasonable
+                    if (result.price > 0 && result.timestamp > 0) {
+                        return result;
+                    }
+                } catch {
+                    // Continue to next oracle
+                    continue;
                 }
-            } catch {
-                // Continue to next oracle
-                continue;
             }
         }
 
@@ -487,9 +496,12 @@ contract SmartOracleAggregator is
         address[] calldata tokens,
         bytes32[] calldata feedIds
     ) external onlyOwner {
-        require(tokens.length == feedIds.length, "Length mismatch");
-        for (uint256 i; i < tokens.length; ++i) {
-            tokenFeedIds[tokens[i]] = feedIds[i];
+        uint256 len = tokens.length;
+        require(len == feedIds.length, "Length mismatch");
+        unchecked {
+            for (uint256 i; i < len; ++i) {
+                tokenFeedIds[tokens[i]] = feedIds[i];
+            }
         }
     }
 

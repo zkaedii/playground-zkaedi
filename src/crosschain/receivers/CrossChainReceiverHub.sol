@@ -625,17 +625,23 @@ contract CrossChainReceiverHub is
         string[] calldata axelarChains,
         uint256[] calldata evmChainIds
     ) external onlyOwner {
-        for (uint i; i < ccipSelectors.length; ++i) {
-            ccipSelectorToChainId[ccipSelectors[i]] = evmChainIds[i];
-        }
-        for (uint i; i < lzEids.length; ++i) {
-            lzEidToChainId[lzEids[i]] = evmChainIds[i];
-        }
-        for (uint i; i < whChainIds.length; ++i) {
-            wormholeChainToEvmChainId[whChainIds[i]] = evmChainIds[i];
-        }
-        for (uint i; i < axelarChains.length; ++i) {
-            axelarChainToId[keccak256(bytes(axelarChains[i]))] = evmChainIds[i];
+        unchecked {
+            uint256 len = ccipSelectors.length;
+            for (uint256 i; i < len; ++i) {
+                ccipSelectorToChainId[ccipSelectors[i]] = evmChainIds[i];
+            }
+            len = lzEids.length;
+            for (uint256 i; i < len; ++i) {
+                lzEidToChainId[lzEids[i]] = evmChainIds[i];
+            }
+            len = whChainIds.length;
+            for (uint256 i; i < len; ++i) {
+                wormholeChainToEvmChainId[whChainIds[i]] = evmChainIds[i];
+            }
+            len = axelarChains.length;
+            for (uint256 i; i < len; ++i) {
+                axelarChainToId[keccak256(bytes(axelarChains[i]))] = evmChainIds[i];
+            }
         }
     }
 

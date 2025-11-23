@@ -482,9 +482,11 @@ contract EmergencyManager is
     //////////////////////////////////////////////////////////////*/
 
     function addGuardian(address guardian) external onlyOwner {
+        require(guardian != address(0), "Invalid guardian");
         require(!guardians[guardian], "Already guardian");
+        require(guardianCount < 10, "Max guardians reached");
         guardians[guardian] = true;
-        guardianCount++;
+        unchecked { guardianCount++; }
         emit GuardianAdded(guardian);
     }
 
@@ -492,7 +494,7 @@ contract EmergencyManager is
         require(guardians[guardian], "Not guardian");
         require(guardianCount > 1, "Cannot remove last guardian");
         guardians[guardian] = false;
-        guardianCount--;
+        unchecked { guardianCount--; }
         emit GuardianRemoved(guardian);
     }
 

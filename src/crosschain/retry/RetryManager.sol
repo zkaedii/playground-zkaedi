@@ -242,30 +242,37 @@ contract RetryManager is
         require(executors[msg.sender] || msg.sender == owner(), "Not authorized");
 
         uint256 executed;
+        uint256 queueLen = retryQueue.length;
+        uint256 currentTimestamp = block.timestamp;
 
-        for (uint256 i; i < retryQueue.length && executed < maxRetries_; ) {
-            bytes32 messageId = retryQueue[i];
-            FailedMessage storage msg_ = failedMessages[messageId];
+        unchecked {
+            for (uint256 i; i < queueLen && executed < maxRetries_; ) {
+                bytes32 messageId = retryQueue[i];
+                FailedMessage storage msg_ = failedMessages[messageId];
 
-            if (msg_.state != MessageState.RETRYING) {
-                _removeFromQueue(i);
-                continue;
-            }
+                if (msg_.state != MessageState.RETRYING) {
+                    _removeFromQueue(i);
+                    --queueLen; // Queue shrunk
+                    continue;
+                }
 
-            if (block.timestamp < msg_.nextRetryAt) {
-                ++i;
-                continue;
-            }
+                if (currentTimestamp < msg_.nextRetryAt) {
+                    ++i;
+                    continue;
+                }
 
-            // Execute retry
-            bool success = _executeRetry(messageId);
-            executed++;
+                // Execute retry
+                bool success = _executeRetry(messageId);
+                ++executed;
 
-            if (success) {
-                _handleSuccess(messageId);
-                _removeFromQueue(i);
-            } else {
-                _handleFailure(messageId, i);
+                if (success) {
+                    _handleSuccess(messageId);
+                    _removeFromQueue(i);
+                    --queueLen;
+                } else {
+                    _handleFailure(messageId, i);
+                    ++i;
+                }
             }
         }
     }
@@ -489,18 +496,21 @@ contract RetryManager is
     function getPendingRetries(uint256 limit)
         external view returns (bytes32[] memory pending, uint256 count)
     {
-        uint256 actualLimit = limit > retryQueue.length ? retryQueue.length : limit;
+        uint256 queueLen = retryQueue.length;
+        uint256 actualLimit = limit > queueLen ? queueLen : limit;
         pending = new bytes32[](actualLimit);
-        count = 0;
+        uint256 currentTimestamp = block.timestamp;
 
-        for (uint256 i; i < retryQueue.length && count < actualLimit; ++i) {
-            bytes32 messageId = retryQueue[i];
-            FailedMessage storage msg_ = failedMessages[messageId];
+        unchecked {
+            for (uint256 i; i < queueLen && count < actualLimit; ++i) {
+                bytes32 messageId = retryQueue[i];
+                FailedMessage storage msg_ = failedMessages[messageId];
 
-            if (msg_.state == MessageState.RETRYING &&
-                block.timestamp >= msg_.nextRetryAt) {
-                pending[count] = messageId;
-                count++;
+                if (msg_.state == MessageState.RETRYING &&
+                    currentTimestamp >= msg_.nextRetryAt) {
+                    pending[count] = messageId;
+                    ++count;
+                }
             }
         }
     }

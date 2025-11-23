@@ -190,6 +190,13 @@ contract RefundManager is
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Create a refund request
+    /// @param originalTxId The original transaction ID that failed
+    /// @param recipient The address to receive the refund
+    /// @param token The token to refund (address(0) for ETH)
+    /// @param amount The amount to refund
+    /// @param reason The reason for the refund
+    /// @param proofHash Optional proof hash for verification
+    /// @return refundId The unique ID for this refund request
     function createRefund(
         bytes32 originalTxId,
         address recipient,
@@ -199,6 +206,8 @@ contract RefundManager is
         bytes32 proofHash
     ) external returns (bytes32 refundId) {
         require(processors[msg.sender] || msg.sender == owner(), "Not authorized");
+        require(recipient != address(0), "Invalid recipient");
+        require(amount > 0, "Amount must be positive");
 
         RefundConfig memory config = _getConfig(token);
 
@@ -499,22 +508,29 @@ contract RefundManager is
     //////////////////////////////////////////////////////////////*/
 
     function setTokenConfig(address token, RefundConfig calldata config) external onlyOwner {
+        require(config.feePercentage <= 1000, "Fee too high"); // Max 10%
+        require(config.expiryPeriod >= 1 days, "Expiry too short");
         tokenConfigs[token] = config;
     }
 
     function setDefaultConfig(RefundConfig calldata config) external onlyOwner {
+        require(config.feePercentage <= 1000, "Fee too high"); // Max 10%
+        require(config.expiryPeriod >= 1 days, "Expiry too short");
         defaultConfig = config;
     }
 
     function setProcessor(address processor, bool status) external onlyOwner {
+        require(processor != address(0), "Invalid processor");
         processors[processor] = status;
     }
 
     function setResolver(address resolver, bool status) external onlyOwner {
+        require(resolver != address(0), "Invalid resolver");
         resolvers[resolver] = status;
     }
 
     function setTreasury(address _treasury) external onlyOwner {
+        require(_treasury != address(0), "Invalid treasury");
         treasury = _treasury;
     }
 
