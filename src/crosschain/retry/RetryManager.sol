@@ -156,6 +156,9 @@ contract RetryManager is
     /// @dev Handler contract for retries
     address public retryHandler;
 
+    /// @dev Array of dead letter message IDs for iteration
+    bytes32[] public deadLetterIds;
+
     /*//////////////////////////////////////////////////////////////
                         INITIALIZATION
     //////////////////////////////////////////////////////////////*/
@@ -388,6 +391,9 @@ contract RetryManager is
             resolved: false
         });
 
+        // Track message ID for iteration
+        deadLetterIds.push(messageId);
+
         metrics.deadLettered++;
         metrics.pendingRetries--;
 
@@ -516,12 +522,31 @@ contract RetryManager is
     }
 
     function getDeadLetters(uint256 offset, uint256 limit)
-        external view returns (bytes32[] memory)
+        external view returns (bytes32[] memory result, uint256 count)
     {
-        // Would iterate through dead letter queue
-        // Simplified for this implementation
-        bytes32[] memory result = new bytes32[](limit);
-        return result;
+        uint256 totalDeadLetters = deadLetterIds.length;
+
+        // Return empty if offset is beyond array length
+        if (offset >= totalDeadLetters) {
+            return (new bytes32[](0), 0);
+        }
+
+        // Calculate actual count to return
+        uint256 remaining = totalDeadLetters - offset;
+        count = remaining < limit ? remaining : limit;
+
+        result = new bytes32[](count);
+
+        unchecked {
+            for (uint256 i; i < count; ++i) {
+                result[i] = deadLetterIds[offset + i];
+            }
+        }
+    }
+
+    /// @notice Get total count of dead letters
+    function getDeadLetterCount() external view returns (uint256) {
+        return deadLetterIds.length;
     }
 
     function getMetrics() external view returns (RetryMetrics memory) {
@@ -561,5 +586,5 @@ contract RetryManager is
 
     receive() external payable {}
 
-    uint256[40] private __gap;
+    uint256[39] private __gap;
 }
