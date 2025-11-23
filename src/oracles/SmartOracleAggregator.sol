@@ -58,6 +58,11 @@ contract SmartOracleAggregator is
         uint256 price,
         OracleType source
     );
+    event PythOracleUpdated(address indexed oldOracle, address indexed newOracle);
+    event RedstoneOracleUpdated(address indexed oldOracle, address indexed newOracle);
+    event TokenFeedIdUpdated(address indexed token, bytes32 feedId);
+    event StalenessThresholdUpdated(address indexed base, address indexed quote, uint256 threshold);
+    event CustomPriceSet(address indexed base, address indexed quote, uint256 price);
     event FallbackTriggered(
         address indexed base,
         address indexed quote,
@@ -478,17 +483,22 @@ contract SmartOracleAggregator is
 
     /// @notice Set Pyth oracle address
     function setPythOracle(address _pyth) external onlyOwner {
+        address oldOracle = pythOracle;
         pythOracle = _pyth;
+        emit PythOracleUpdated(oldOracle, _pyth);
     }
 
     /// @notice Set RedStone oracle address
     function setRedstoneOracle(address _redstone) external onlyOwner {
+        address oldOracle = redstoneOracle;
         redstoneOracle = _redstone;
+        emit RedstoneOracleUpdated(oldOracle, _redstone);
     }
 
     /// @notice Set feed ID for a token
     function setTokenFeedId(address token, bytes32 feedId) external onlyOwner {
         tokenFeedIds[token] = feedId;
+        emit TokenFeedIdUpdated(token, feedId);
     }
 
     /// @notice Set feed IDs in batch
@@ -501,6 +511,7 @@ contract SmartOracleAggregator is
         unchecked {
             for (uint256 i; i < len; ++i) {
                 tokenFeedIds[tokens[i]] = feedIds[i];
+                emit TokenFeedIdUpdated(tokens[i], feedIds[i]);
             }
         }
     }
@@ -512,6 +523,7 @@ contract SmartOracleAggregator is
         uint256 threshold
     ) external onlyOwner {
         _stalenessThreshold[_getPairHash(base, quote)] = threshold;
+        emit StalenessThresholdUpdated(base, quote, threshold);
     }
 
     /// @notice Set emergency/custom price
@@ -521,6 +533,8 @@ contract SmartOracleAggregator is
         uint256 price,
         uint8 decimals
     ) external onlyOwner {
+        require(price > 0, "Invalid price");
+
         _customPrices[_getPairHash(base, quote)] = PriceData({
             price: price,
             decimals: decimals,
@@ -528,6 +542,8 @@ contract SmartOracleAggregator is
             confidence: 0,
             source: OracleType.CUSTOM
         });
+
+        emit CustomPriceSet(base, quote, price);
     }
 
     /*//////////////////////////////////////////////////////////////
