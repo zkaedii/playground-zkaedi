@@ -1,3 +1,9 @@
+'use client';
+
+import { OrbVisualization } from '@/components/OrbVisualization';
+
+export default function Home() {
+  return <OrbVisualization />;
 'use client'
 
 import { useReadContract } from 'wagmi'

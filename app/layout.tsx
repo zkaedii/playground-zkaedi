@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "The Orb - UUPSTokenV2 Visualization",
+  description: "A hypnotic 3D visualization of token supply on Arbitrum One",
 import Providers from "./providers";
 
 export const metadata: Metadata = {
@@ -15,6 +19,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
+        {children}
         <Providers>{children}</Providers>
       </body>
     </html>
