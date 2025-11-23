@@ -449,6 +449,9 @@ contract BalancerV2Adapter is BaseDEXAdapter {
     // Pool registry: token pair hash => pool ID
     mapping(bytes32 => bytes32) public poolIds;
 
+    // Track tokens that have registered pools
+    mapping(address => bool) public supportedTokens;
+
     constructor(address _vault, address _queries) {
         vault = IBalancerVault(_vault);
         queries = IBalancerQueries(_queries);
@@ -514,8 +517,8 @@ contract BalancerV2Adapter is BaseDEXAdapter {
         }
     }
 
-    function supportsToken(address) external pure override returns (bool) {
-        return true; // Would check against registered pools
+    function supportsToken(address token) external view override returns (bool) {
+        return supportedTokens[token];
     }
 
     function name() external pure override returns (string memory) {
@@ -524,6 +527,8 @@ contract BalancerV2Adapter is BaseDEXAdapter {
 
     function registerPool(address tokenA, address tokenB, bytes32 poolId) external {
         poolIds[_pairHash(tokenA, tokenB)] = poolId;
+        supportedTokens[tokenA] = true;
+        supportedTokens[tokenB] = true;
     }
 
     function _pairHash(address tokenA, address tokenB) internal pure returns (bytes32) {
