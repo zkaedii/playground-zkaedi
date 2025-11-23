@@ -44,6 +44,30 @@ deploy-verify:
 deploy-testnet:
 	forge script script/DeployProxy.s.sol:DeployProxy --rpc-url arbitrum_sepolia --broadcast -vvv
 
+# ============ V3 DEPLOYMENT ============
+
+# Deploy V3 to Arbitrum One
+deploy-v3:
+	forge script script/DeployProxyV3.s.sol:DeployProxyV3 --rpc-url arbitrum --broadcast -vvv
+
+# Deploy V3 with verification
+deploy-v3-verify:
+	forge script script/DeployProxyV3.s.sol:DeployProxyV3 --rpc-url arbitrum --broadcast --verify -vvv
+
+# Upgrade existing proxy to V3
+upgrade-v3:
+	forge script script/DeployProxyV3.s.sol:UpgradeToV3 --rpc-url arbitrum --broadcast -vvv
+
+# Deploy V3 to testnet
+deploy-v3-testnet:
+	forge script script/DeployProxyV3.s.sol:DeployProxyV3 --rpc-url arbitrum_sepolia --broadcast -vvv
+
+# ============ GAS COMPARISON ============
+
+# Compare V2 vs V3 gas usage
+gas-compare:
+	forge test --match-contract GasComparisonTest -vvv --gas-report
+
 # Clean build artifacts
 clean:
 	forge clean
