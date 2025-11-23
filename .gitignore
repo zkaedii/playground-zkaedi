@@ -39,3 +39,23 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# Foundry
+cache/
+out/
+broadcast/
+
+# Environment
+.env
+
+# Dependencies
+lib/
+
+# Node (if using npm for OZ contracts)
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store

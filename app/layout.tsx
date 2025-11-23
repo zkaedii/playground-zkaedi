@@ -4,6 +4,11 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "The Orb - UUPSTokenV2 Visualization",
   description: "A hypnotic 3D visualization of token supply on Arbitrum One",
+import Providers from "./providers";
+
+export const metadata: Metadata = {
+  title: "UUPSToken V2 - Neon Cyberpunk",
+  description: "Sultry dark-neon frontend for UUPSTokenV2 ERC-20 on Arbitrum",
 };
 
 export default function RootLayout({
@@ -15,6 +20,7 @@ export default function RootLayout({
     <html lang="en">
       <body className="antialiased">
         {children}
+        <Providers>{children}</Providers>
       </body>
     </html>
   );
