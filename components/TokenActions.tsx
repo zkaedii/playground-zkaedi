@@ -21,7 +21,7 @@ export default function TokenActions() {
   })
   
   useEffect(() => {
-    // Create audio element for moaning sound (using a placeholder)
+    // Create audio element for moaning sound (21+ content - replace /moan.mp3 with your audio file)
     audioRef.current = new Audio('/moan.mp3')
     audioRef.current.volume = 0.3
   }, [])

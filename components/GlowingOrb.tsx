@@ -103,6 +103,7 @@ function AnimatedOrb({ totalSupply, maxSupply = BigInt(1000000) }: OrbProps) {
 function Points({ count }: { count: number }) {
   const points = useRef<THREE.Points>(null)
   
+  // Generate random particle positions (intentionally using Math.random in useMemo for initial placement)
   const particlesPosition = useMemo(() => {
     const positions = new Float32Array(count * 3)
     for (let i = 0; i < count; i++) {
@@ -163,7 +164,12 @@ export default function GlowingOrb({ totalSupply, maxSupply }: OrbProps) {
       </Canvas>
       
       {/* Glow effect overlay */}
-      <div className="absolute inset-0 bg-gradient-radial from-pink-500/20 via-transparent to-transparent pointer-events-none blur-3xl" />
+      <div 
+        className="absolute inset-0 pointer-events-none blur-3xl"
+        style={{
+          background: 'radial-gradient(circle, rgba(236, 72, 153, 0.2) 0%, transparent 70%)'
+        }}
+      />
     </div>
   )
 }
