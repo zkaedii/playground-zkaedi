@@ -126,6 +126,10 @@ contract RefundManager is
         address indexed token,
         uint256 amount
     );
+    event ProcessorUpdated(address indexed processor, bool status);
+    event ResolverUpdated(address indexed resolver, bool status);
+    event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
+    event ConfigUpdated(address indexed token);
 
     /*//////////////////////////////////////////////////////////////
                             STORAGE
@@ -168,6 +172,8 @@ contract RefundManager is
     }
 
     function initialize(address _treasury) external initializer {
+        require(_treasury != address(0), "Invalid treasury");
+
         __Ownable_init(msg.sender);
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
@@ -183,6 +189,8 @@ contract RefundManager is
             requireProof: false,
             autoProcess: true
         });
+
+        emit TreasuryUpdated(address(0), _treasury);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -511,27 +519,33 @@ contract RefundManager is
         require(config.feePercentage <= 1000, "Fee too high"); // Max 10%
         require(config.expiryPeriod >= 1 days, "Expiry too short");
         tokenConfigs[token] = config;
+        emit ConfigUpdated(token);
     }
 
     function setDefaultConfig(RefundConfig calldata config) external onlyOwner {
         require(config.feePercentage <= 1000, "Fee too high"); // Max 10%
         require(config.expiryPeriod >= 1 days, "Expiry too short");
         defaultConfig = config;
+        emit ConfigUpdated(address(0));
     }
 
     function setProcessor(address processor, bool status) external onlyOwner {
         require(processor != address(0), "Invalid processor");
         processors[processor] = status;
+        emit ProcessorUpdated(processor, status);
     }
 
     function setResolver(address resolver, bool status) external onlyOwner {
         require(resolver != address(0), "Invalid resolver");
         resolvers[resolver] = status;
+        emit ResolverUpdated(resolver, status);
     }
 
     function setTreasury(address _treasury) external onlyOwner {
         require(_treasury != address(0), "Invalid treasury");
+        address oldTreasury = treasury;
         treasury = _treasury;
+        emit TreasuryUpdated(oldTreasury, _treasury);
     }
 
     function _authorizeUpgrade(address) internal override onlyOwner {}
