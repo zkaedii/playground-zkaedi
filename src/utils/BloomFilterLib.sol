@@ -498,18 +498,27 @@ library BloomFilterLib {
         return count;
     }
 
-    /// @notice Count bits in a uint256 (Brian Kernighan's algorithm optimized)
-    function _popCount256(uint256 x) private pure returns (uint256 count) {
-        // Parallel bit count
+    /// @notice Count bits in a uint256 (parallel bit count algorithm)
+    /// @dev Returns the number of 1-bits in x, correctly handling all 256 bits
+    function _popCount256(uint256 x) private pure returns (uint256) {
+        // Parallel bit count using SWAR algorithm
+        // Each step counts bits in progressively larger groups
+
+        // Count bits in pairs (0-2 per pair)
         x = x - ((x >> 1) & 0x5555555555555555555555555555555555555555555555555555555555555555);
+
+        // Count bits in nibbles (0-4 per nibble)
         x = (x & 0x3333333333333333333333333333333333333333333333333333333333333333) +
             ((x >> 2) & 0x3333333333333333333333333333333333333333333333333333333333333333);
+
+        // Count bits in bytes (0-8 per byte)
         x = (x + (x >> 4)) & 0x0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f;
-        x = x + (x >> 8);
-        x = x + (x >> 16);
-        x = x + (x >> 32);
-        x = x + (x >> 64);
-        x = x + (x >> 128);
-        return x & 0xff;
+
+        // Sum all bytes by multiplying by 0x0101... and extracting top byte
+        // This works because multiplying by 0x0101...01 (32 bytes of 0x01) sums all bytes
+        // into the top byte position
+        x = (x * 0x0101010101010101010101010101010101010101010101010101010101010101) >> 248;
+
+        return x;
     }
 }

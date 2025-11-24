@@ -31,6 +31,8 @@ library AuctionLib {
     error NotSettled();
     error InsufficientFunds();
     error WithdrawalFailed();
+    error BatchSizeTooLarge();
+    error DuplicateBidder();
 
     // ============ Constants ============
     uint256 internal constant BPS = 10000;
@@ -420,7 +422,25 @@ library AuctionLib {
     }
 
     /// @notice Create bid commitment hash
+    /// @dev Includes bidder and auction context to prevent replay attacks across auctions
+    /// @param bidAmount The bid amount
+    /// @param salt Random salt for hiding the bid
+    /// @param bidder The bidder's address
+    /// @param auctionId Unique identifier for the auction
+    /// @return commitment The commitment hash
     function createCommitment(
+        uint256 bidAmount,
+        bytes32 salt,
+        address bidder,
+        bytes32 auctionId
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(bidAmount, salt, bidder, auctionId));
+    }
+
+    /// @notice Create bid commitment hash (legacy, without context - NOT RECOMMENDED)
+    /// @dev WARNING: This function does not include bidder/auction context.
+    ///      Use createCommitment(bidAmount, salt, bidder, auctionId) instead to prevent replay attacks.
+    function createCommitmentUnsafe(
         uint256 bidAmount,
         bytes32 salt
     ) internal pure returns (bytes32) {
@@ -559,6 +579,12 @@ library AuctionLib {
     }
 
     /// @notice Place bid in batch auction
+    /// @dev Enforces MAX_BATCH_SIZE limit and prevents duplicate bids from same bidder
+    /// @param auction The batch auction storage reference
+    /// @param bidder The bidder's address
+    /// @param amount Token amount requested
+    /// @param maxPrice Maximum price per token the bidder is willing to pay
+    /// @return bidIndex Index of the bid in the bids array
     function bidBatch(
         BatchAuction storage auction,
         address bidder,
@@ -570,6 +596,14 @@ library AuctionLib {
         if (block.timestamp > auction.config.endTime) revert AuctionEnded();
         if (amount == 0 || maxPrice == 0) revert InvalidBid();
         if (maxPrice < auction.config.reservePrice) revert BidTooLow(auction.config.reservePrice, maxPrice);
+        if (auction.bids.length >= MAX_BATCH_SIZE) revert BatchSizeTooLarge();
+
+        // Check if bidder already has a bid (prevent overwriting index references)
+        if (auction.bids.length > 0 && auction.bidIndices[bidder] < auction.bids.length) {
+            if (auction.bids[auction.bidIndices[bidder]].bidder == bidder) {
+                revert DuplicateBidder();
+            }
+        }
 
         auction.bids.push(BatchBid({
             bidder: bidder,
@@ -587,35 +621,49 @@ library AuctionLib {
     }
 
     /// @notice Calculate clearing price for batch auction
+    /// @dev Uses insertion sort which is O(n^2) but bounded by MAX_BATCH_SIZE.
+    ///      For production with many bids, consider off-chain sorting with on-chain verification.
+    /// @param auction The batch auction storage reference
+    /// @return clearingPrice The uniform clearing price for all winning bids
+    /// @return totalFilled Total amount of tokens that will be filled
     function calculateClearingPrice(
         BatchAuction storage auction
     ) internal view returns (uint256 clearingPrice, uint256 totalFilled) {
-        if (auction.bids.length == 0) return (0, 0);
+        uint256 bidCount = auction.bids.length;
+        if (bidCount == 0) return (0, 0);
 
-        // Sort bids by price (descending) - simplified bubble sort for on-chain
-        uint256[] memory prices = new uint256[](auction.bids.length);
-        uint256[] memory amounts = new uint256[](auction.bids.length);
+        // Copy bids to memory arrays for sorting
+        // Note: MAX_BATCH_SIZE ensures this remains gas-feasible
+        uint256[] memory prices = new uint256[](bidCount);
+        uint256[] memory amounts = new uint256[](bidCount);
 
-        for (uint256 i = 0; i < auction.bids.length; i++) {
+        for (uint256 i = 0; i < bidCount; i++) {
             prices[i] = auction.bids[i].price;
             amounts[i] = auction.bids[i].amount;
         }
 
-        // Sort descending by price
-        for (uint256 i = 0; i < prices.length - 1; i++) {
-            for (uint256 j = 0; j < prices.length - i - 1; j++) {
-                if (prices[j] < prices[j + 1]) {
-                    (prices[j], prices[j + 1]) = (prices[j + 1], prices[j]);
-                    (amounts[j], amounts[j + 1]) = (amounts[j + 1], amounts[j]);
-                }
+        // Insertion sort (more efficient than bubble sort for nearly-sorted data)
+        // O(n^2) worst case but bounded by MAX_BATCH_SIZE (100)
+        for (uint256 i = 1; i < bidCount; i++) {
+            uint256 keyPrice = prices[i];
+            uint256 keyAmount = amounts[i];
+            uint256 j = i;
+
+            // Sort descending by price
+            while (j > 0 && prices[j - 1] < keyPrice) {
+                prices[j] = prices[j - 1];
+                amounts[j] = amounts[j - 1];
+                j--;
             }
+            prices[j] = keyPrice;
+            amounts[j] = keyAmount;
         }
 
         // Find clearing price where demand meets supply
         uint256 supply = auction.config.tokenAmount;
         uint256 cumulative = 0;
 
-        for (uint256 i = 0; i < prices.length; i++) {
+        for (uint256 i = 0; i < bidCount; i++) {
             cumulative += amounts[i];
             if (cumulative >= supply) {
                 clearingPrice = prices[i];
