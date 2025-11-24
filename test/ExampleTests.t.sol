@@ -32,18 +32,22 @@ contract MockERC20 {
     }
 
     function burn(address from, uint256 amount) external {
+        require(balanceOf[from] >= amount, "Insufficient balance");
         balanceOf[from] -= amount;
         totalSupply -= amount;
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {
+        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
         return true;
     }
 
     function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(balanceOf[from] >= amount, "Insufficient balance");
         if (allowance[from][msg.sender] != type(uint256).max) {
+            require(allowance[from][msg.sender] >= amount, "Insufficient allowance");
             allowance[from][msg.sender] -= amount;
         }
         balanceOf[from] -= amount;
