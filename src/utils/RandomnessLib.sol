@@ -440,10 +440,14 @@ library RandomnessLib {
     }
 
     /// @notice Fisher-Yates shuffle for array indices
+    /// @param seed Random seed for shuffling
+    /// @param length Number of indices to generate (must be > 0 and <= MAX_BATCH_SIZE)
+    /// @return indices Shuffled array of indices [0, length)
     function shuffleIndices(
         uint256 seed,
         uint256 length
     ) internal pure returns (uint256[] memory) {
+        if (length == 0) revert InvalidRange();
         if (length > MAX_BATCH_SIZE) revert BatchSizeTooLarge();
 
         uint256[] memory indices = new uint256[](length);
@@ -453,25 +457,33 @@ library RandomnessLib {
             indices[i] = i;
         }
 
-        // Shuffle
-        bytes32 currentSeed = bytes32(seed);
-        for (uint256 i = length - 1; i > 0; i--) {
-            currentSeed = keccak256(abi.encodePacked(currentSeed, i));
-            uint256 j = uint256(currentSeed) % (i + 1);
+        // Shuffle (only needed if length > 1)
+        if (length > 1) {
+            bytes32 currentSeed = bytes32(seed);
+            for (uint256 i = length - 1; i > 0; i--) {
+                currentSeed = keccak256(abi.encodePacked(currentSeed, i));
+                uint256 j = uint256(currentSeed) % (i + 1);
 
-            // Swap
-            (indices[i], indices[j]) = (indices[j], indices[i]);
+                // Swap
+                (indices[i], indices[j]) = (indices[j], indices[i]);
+            }
         }
 
         return indices;
     }
 
     /// @notice Select random subset (k items from n)
+    /// @param seed Random seed for selection
+    /// @param n Total number of items to select from (must be > 0)
+    /// @param k Number of items to select (must be > 0 and <= n)
+    /// @return selected Array of k randomly selected indices from [0, n)
     function randomSubset(
         uint256 seed,
         uint256 n,
         uint256 k
     ) internal pure returns (uint256[] memory) {
+        if (n == 0) revert InvalidRange();
+        if (k == 0) revert InvalidRange();
         if (k > n) revert InvalidRange();
         if (k > MAX_BATCH_SIZE) revert BatchSizeTooLarge();
 

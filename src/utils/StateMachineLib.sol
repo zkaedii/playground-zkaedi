@@ -12,6 +12,7 @@ library StateMachineLib {
     error StateNotRegistered(bytes32 state);
     error TransitionAlreadyExists(bytes32 from, bytes32 to);
     error MachineNotInitialized();
+    error MachineAlreadyInitialized();
     error MachineLocked();
     error InvalidState();
     error GuardFailed(bytes32 guardId);
@@ -114,7 +115,7 @@ library StateMachineLib {
         bytes32 machineId,
         bytes32 initialState
     ) internal {
-        if (machine.initialized) revert MachineNotInitialized();
+        if (machine.initialized) revert MachineAlreadyInitialized();
 
         machine.id = machineId;
         machine.currentState = initialState;
@@ -536,28 +537,38 @@ library StateMachineLib {
         return true;
     }
 
-    /// @notice Calculate shortest path between two states (BFS)
-    /// @dev Returns empty array if no path exists
-    function findPath(
+    /// @notice Check if a path exists between two states
+    /// @dev Full BFS pathfinding should be done off-chain due to gas costs and
+    ///      Solidity limitations (cannot declare storage mappings in functions).
+    ///      This function only validates if direct or simple paths exist.
+    /// @param machine The machine storage reference
+    /// @param fromState The starting state
+    /// @param toState The target state
+    /// @return exists Whether any path exists (checks direct transitions only)
+    /// @return isDirect Whether a direct transition exists
+    function checkPathExists(
         Machine storage machine,
         bytes32 fromState,
         bytes32 toState
-    ) internal view returns (bytes32[] memory) {
+    ) internal view returns (bool exists, bool isDirect) {
         if (fromState == toState) {
-            bytes32[] memory single = new bytes32[](1);
-            single[0] = fromState;
-            return single;
+            return (true, true);
         }
 
-        // BFS implementation
-        bytes32[] memory queue = new bytes32[](MAX_STATES);
-        mapping(bytes32 => bytes32) storage parent;
-        mapping(bytes32 => bool) storage visited;
+        // Check direct transition
+        if (isTransitionAllowed(machine, fromState, toState)) {
+            return (true, true);
+        }
 
-        // Note: This is a simplified version - full BFS would need transient storage
-        // For production, consider off-chain path finding
+        // Check one-hop paths (from -> intermediate -> to)
+        bytes32[] memory nextStates = machine.allowedTransitions[fromState];
+        for (uint256 i = 0; i < nextStates.length; i++) {
+            if (isTransitionAllowed(machine, nextStates[i], toState)) {
+                return (true, false);
+            }
+        }
 
-        bytes32[] memory path = new bytes32[](0);
-        return path;
+        // For deeper paths, use off-chain computation
+        return (false, false);
     }
 }

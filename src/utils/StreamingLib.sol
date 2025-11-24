@@ -4,6 +4,16 @@ pragma solidity ^0.8.26;
 /// @title StreamingLib
 /// @notice Token streaming library for continuous payment flows and vesting
 /// @dev Implements linear, exponential, and milestone-based streaming patterns
+///
+/// INTEGRATION NOTES:
+/// - This library returns amounts but does NOT perform token transfers. The host contract
+///   must handle actual ERC20 transfers and implement appropriate access control.
+/// - All rate calculations use integer division which rounds DOWN. This means:
+///   - streamedAmount may be slightly less than depositAmount until endTime
+///   - ratePerSecond * duration may be < depositAmount due to remainder truncation
+/// - Host contracts should use reentrancy guards when performing withdrawals
+/// - Consider using the "pull over push" pattern for safety
+///
 /// @author playground-zkaedi
 library StreamingLib {
     // ============ Custom Errors ============
@@ -128,6 +138,20 @@ library StreamingLib {
     // ============ Linear Stream Functions ============
 
     /// @notice Create a linear stream
+    /// @dev Rate calculation uses integer division: ratePerSecond = amount / duration.
+    ///      Due to rounding, ratePerSecond * duration may be slightly less than amount.
+    ///      The full depositAmount is available at endTime regardless of rate.
+    /// @param stream The stream storage reference
+    /// @param sender Token depositor address
+    /// @param recipient Token receiver address
+    /// @param token Token being streamed
+    /// @param amount Total tokens to stream (must be > 0)
+    /// @param startTime Stream start timestamp (0 = block.timestamp)
+    /// @param duration Stream duration in seconds (must be > 0)
+    /// @param cliffDuration Cliff duration in seconds (0 = no cliff)
+    /// @param cancelable Whether sender can cancel the stream
+    /// @param transferable Whether recipient can transfer the stream
+    /// @return streamId Unique identifier for the stream
     function createLinearStream(
         LinearStream storage stream,
         address sender,
@@ -141,6 +165,7 @@ library StreamingLib {
         bool transferable
     ) internal returns (uint256 streamId) {
         if (recipient == address(0)) revert InvalidRecipient();
+        if (sender == address(0)) revert InvalidSender();
         if (amount == 0) revert InvalidStreamAmount();
         if (duration == 0) revert InvalidStreamDuration();
         if (startTime == 0) startTime = block.timestamp;
@@ -160,6 +185,8 @@ library StreamingLib {
             transferable: transferable
         });
 
+        // Note: Integer division may result in ratePerSecond * duration < amount
+        // This is handled by returning full depositAmount at endTime
         stream.ratePerSecond = amount / duration;
         stream.withdrawnAmount = 0;
         stream.status = StreamStatus.Pending;
@@ -453,6 +480,17 @@ library StreamingLib {
     // ============ Dynamic Stream Functions ============
 
     /// @notice Create dynamic rate stream
+    /// @dev End time is calculated as startTime + (amount / initialRate).
+    ///      Due to integer division, the calculated duration may result in
+    ///      duration * initialRate < amount. Rate changes recalculate endTime.
+    /// @param stream The stream storage reference
+    /// @param sender Token depositor address
+    /// @param recipient Token receiver address
+    /// @param token Token being streamed
+    /// @param amount Total tokens to stream (must be > 0)
+    /// @param startTime Stream start timestamp (0 = block.timestamp)
+    /// @param initialRate Initial rate per second (must be > 0)
+    /// @param cancelable Whether sender can cancel the stream
     function createDynamicStream(
         DynamicStream storage stream,
         address sender,
@@ -464,11 +502,13 @@ library StreamingLib {
         bool cancelable
     ) internal {
         if (recipient == address(0)) revert InvalidRecipient();
+        if (sender == address(0)) revert InvalidSender();
         if (amount == 0) revert InvalidStreamAmount();
         if (initialRate == 0) revert InvalidStreamAmount();
         if (startTime == 0) startTime = block.timestamp;
 
         // Calculate end time based on initial rate
+        // Note: Integer division means duration * initialRate may be < amount
         uint256 duration = amount / initialRate;
 
         stream.config = StreamConfig({
@@ -598,6 +638,14 @@ library StreamingLib {
     }
 
     /// @notice Get batch stream recipient info
+    /// @dev Streamed amount uses pro-rata calculation: (allocation * elapsed) / duration.
+    ///      Integer division rounds down, so full allocation is only available at endTime.
+    /// @param batch The batch stream storage reference
+    /// @param recipient Address to query
+    /// @return allocation Total allocation for recipient
+    /// @return streamed Amount streamed so far (may be less than allocation due to rounding)
+    /// @return withdrawn Amount already withdrawn
+    /// @return available Amount available to withdraw now
     function getBatchRecipientInfo(
         BatchStream storage batch,
         address recipient
@@ -617,6 +665,7 @@ library StreamingLib {
         } else {
             uint256 elapsed = block.timestamp - batch.startTime;
             uint256 duration = batch.endTime - batch.startTime;
+            // duration > 0 guaranteed by createBatchStream validation
             streamed = (allocation * elapsed) / duration;
         }
 
