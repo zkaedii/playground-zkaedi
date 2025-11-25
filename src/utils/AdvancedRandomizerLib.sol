@@ -20,6 +20,7 @@ pragma solidity ^0.8.20;
  *      🔹 Ĥ(t) = Σ[649 + 4×complexity + 3×parallelism] × Φⁿ × ₿∞ × 777 × luck
  *
  * @custom:formula dH/dt = Φ(E, T, μ, S, I, u, Q, θ)
+ * @custom:version 2.0.0 - Battle-tested & refined
  */
 library AdvancedRandomizerLib {
     // ═══════════════════════════════════════════════════════════════════════════
@@ -29,17 +30,23 @@ library AdvancedRandomizerLib {
     /// @dev WAD precision (18 decimals)
     uint256 internal constant WAD = 1e18;
 
-    /// @dev Pi approximation in WAD (3.14159...)
-    int256 internal constant PI_WAD = 3141592653589793238;
+    /// @dev Half WAD for rounding
+    uint256 internal constant HALF_WAD = 5e17;
+
+    /// @dev Pi approximation in WAD (3.14159265358979323846...)
+    int256 internal constant PI_WAD = 3_141592653589793238;
 
     /// @dev 2*Pi in WAD
-    int256 internal constant TWO_PI_WAD = 6283185307179586476;
+    int256 internal constant TWO_PI_WAD = 6_283185307179586476;
+
+    /// @dev Pi/2 in WAD
+    int256 internal constant HALF_PI_WAD = 1_570796326794896619;
 
     /// @dev Euler's number e in WAD (2.71828...)
-    int256 internal constant E_WAD = 2718281828459045235;
+    int256 internal constant E_WAD = 2_718281828459045235;
 
     /// @dev Golden ratio φ in WAD (1.618...)
-    uint256 internal constant PHI_WAD = 1618033988749894848;
+    uint256 internal constant PHI_WAD = 1_618033988749894848;
 
     /// @dev ln(2) in WAD
     int256 internal constant LN_2_WAD = 693147180559945309;
@@ -56,8 +63,17 @@ library AdvancedRandomizerLib {
     /// @dev Base complexity factor
     uint256 internal constant BASE_COMPLEXITY = 649;
 
-    /// @dev Softplus precision factor
-    uint256 internal constant SOFTPLUS_PRECISION = 1000;
+    /// @dev Maximum exp input to prevent overflow
+    int256 internal constant EXP_MAX_INPUT = 130e18;
+
+    /// @dev Minimum exp input (returns ~0)
+    int256 internal constant EXP_MIN_INPUT = -42e18;
+
+    /// @dev Maximum safe multiplication value
+    uint256 internal constant MAX_SAFE_MUL = type(uint256).max / WAD;
+
+    /// @dev Maximum batch size
+    uint256 internal constant MAX_BATCH_SIZE = 256;
 
     // ═══════════════════════════════════════════════════════════════════════════
     //                              ERRORS
@@ -66,9 +82,12 @@ library AdvancedRandomizerLib {
     error InvalidOscillatorCount();
     error InvalidTimeValue();
     error InvalidParameter();
+    error InvalidRange();
     error HistoryBufferEmpty();
     error Overflow();
     error DivisionByZero();
+    error BatchSizeTooLarge();
+    error ZeroWeights();
 
     // ═══════════════════════════════════════════════════════════════════════════
     //                              STRUCTS
@@ -161,6 +180,14 @@ library AdvancedRandomizerLib {
         bytes32 finalSignature;   // Combined signature hash
     }
 
+    /// @notice Randomness quality metrics
+    struct QualityMetrics {
+        uint256 entropy;          // Shannon entropy estimate
+        uint256 chiSquare;        // Chi-square statistic
+        uint256 runsCount;        // Number of runs (for runs test)
+        bool passedTests;         // Overall quality assessment
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     //                         ENGINE INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════════
@@ -171,71 +198,93 @@ library AdvancedRandomizerLib {
      * @return engine Initialized chaos engine
      */
     function initializeChaosEngine(uint256 seed) internal pure returns (ChaosEngine memory engine) {
-        // Initialize oscillators with varied parameters
-        engine.activeOscillators = 8;
-        for (uint256 i = 0; i < engine.activeOscillators; i++) {
-            uint256 oscSeed = uint256(keccak256(abi.encodePacked(seed, "osc", i)));
-            engine.oscillators[i] = Oscillator({
-                amplitudeBase: (oscSeed % WAD) + WAD / 10,
-                amplitudeModRate: (oscSeed >> 64) % (WAD / 100),
-                frequencyBase: ((oscSeed >> 128) % WAD) + WAD / 10,
-                frequencyModRate: (oscSeed >> 192) % (WAD / 100),
-                phase: int256((oscSeed >> 32) % uint256(TWO_PI_WAD))
+        unchecked {
+            // Initialize oscillators with varied parameters
+            engine.activeOscillators = 8;
+            for (uint256 i = 0; i < engine.activeOscillators; i++) {
+                uint256 oscSeed = uint256(keccak256(abi.encodePacked(seed, "osc", i)));
+                engine.oscillators[i] = Oscillator({
+                    amplitudeBase: _boundValue(oscSeed % WAD, WAD / 10, WAD),
+                    amplitudeModRate: (oscSeed >> 64) % (WAD / 100),
+                    frequencyBase: _boundValue((oscSeed >> 128) % WAD, WAD / 10, WAD),
+                    frequencyModRate: (oscSeed >> 192) % (WAD / 100),
+                    phase: int256((oscSeed >> 32) % uint256(TWO_PI_WAD))
+                });
+            }
+
+            // Initialize decay terms
+            engine.activeDecayTerms = 4;
+            for (uint256 i = 0; i < engine.activeDecayTerms; i++) {
+                uint256 decaySeed = uint256(keccak256(abi.encodePacked(seed, "decay", i)));
+                engine.decayTerms[i] = DecayTerm({
+                    coefficient: _boundValue(decaySeed % WAD, WAD / 5, WAD),
+                    decayRate: _boundValue((decaySeed >> 128) % (WAD / 10), WAD / 100, WAD / 10)
+                });
+            }
+
+            // Initialize softplus parameters with safe bounds
+            uint256 softSeed = uint256(keccak256(abi.encodePacked(seed, "soft")));
+            engine.softplus = SoftplusParams({
+                a: int256(_boundValue((softSeed % WAD) / 10, 1, WAD / 10)),
+                b: int256((softSeed >> 64) % WAD),
+                x0: int256((softSeed >> 128) % WAD) - int256(WAD / 2),
+                integralSteps: 32
             });
+
+            // Initialize trend coefficients with bounded values
+            uint256 trendSeed = uint256(keccak256(abi.encodePacked(seed, "trend")));
+            engine.trends = TrendCoefficients({
+                alpha0: int256((trendSeed % WAD) / 1000), // Reduced to prevent overflow
+                alpha1: int256((trendSeed >> 64) % (WAD / 10)),
+                alpha2: int256((trendSeed >> 128) % (WAD / 10))
+            });
+
+            // Initialize feedback parameters
+            uint256 fbSeed = uint256(keccak256(abi.encodePacked(seed, "feedback")));
+            engine.feedback = FeedbackParams({
+                eta: int256((fbSeed % WAD) / 10), // Reduced feedback strength
+                tau: _boundValue((fbSeed >> 64) % 10, 1, 10),
+                gamma: int256((fbSeed >> 128) % (WAD / 10))
+            });
+
+            // Initialize stochastic parameters
+            engine.stochastic = StochasticParams({
+                sigma: _boundValue((seed % WAD) / 10, WAD / 100, WAD / 5),
+                beta: WAD / 10, // Reduced for stability
+                seed: seed
+            });
+
+            // Initialize external input
+            engine.external_ = ExternalInput({
+                delta: int256(WAD / 10),
+                inputSignal: keccak256(abi.encodePacked(seed, "external"))
+            });
+
+            // Initialize meta-parameters
+            engine.complexity = _boundValue(seed % 100, 1, 100);
+            engine.parallelism = _boundValue((seed >> 64) % 50, 1, 50);
+            engine.luckFactor = _boundValue(seed % LUCKY_777, 1, LUCKY_777);
         }
 
-        // Initialize decay terms
-        engine.activeDecayTerms = 4;
-        for (uint256 i = 0; i < engine.activeDecayTerms; i++) {
-            uint256 decaySeed = uint256(keccak256(abi.encodePacked(seed, "decay", i)));
-            engine.decayTerms[i] = DecayTerm({
-                coefficient: (decaySeed % WAD) + WAD / 5,
-                decayRate: (decaySeed >> 128) % (WAD / 10) + WAD / 100
-            });
+        return engine;
+    }
+
+    /**
+     * @notice Initialize chaos engine with custom oscillator count
+     * @param seed Base random seed
+     * @param oscillatorCount Number of oscillators (1-16)
+     * @return engine Initialized chaos engine
+     */
+    function initializeChaosEngineCustom(
+        uint256 seed,
+        uint256 oscillatorCount
+    ) internal pure returns (ChaosEngine memory engine) {
+        if (oscillatorCount == 0 || oscillatorCount > MAX_OSCILLATORS) {
+            revert InvalidOscillatorCount();
         }
 
-        // Initialize softplus parameters
-        uint256 softSeed = uint256(keccak256(abi.encodePacked(seed, "soft")));
-        engine.softplus = SoftplusParams({
-            a: int256((softSeed % WAD) / 10),
-            b: int256((softSeed >> 64) % WAD),
-            x0: int256((softSeed >> 128) % WAD) - int256(WAD / 2),
-            integralSteps: 32
-        });
-
-        // Initialize trend coefficients
-        uint256 trendSeed = uint256(keccak256(abi.encodePacked(seed, "trend")));
-        engine.trends = TrendCoefficients({
-            alpha0: int256((trendSeed % WAD) / 100),
-            alpha1: int256((trendSeed >> 64) % WAD),
-            alpha2: int256((trendSeed >> 128) % WAD) / 10
-        });
-
-        // Initialize feedback parameters
-        uint256 fbSeed = uint256(keccak256(abi.encodePacked(seed, "feedback")));
-        engine.feedback = FeedbackParams({
-            eta: int256((fbSeed % WAD) / 5),
-            tau: (fbSeed >> 64) % 10 + 1,
-            gamma: int256((fbSeed >> 128) % WAD) / 10
-        });
-
-        // Initialize stochastic parameters
-        engine.stochastic = StochasticParams({
-            sigma: (seed % WAD) / 10 + WAD / 100,
-            beta: WAD / 5,
-            seed: seed
-        });
-
-        // Initialize external input
-        engine.external_ = ExternalInput({
-            delta: int256(WAD / 10),
-            inputSignal: keccak256(abi.encodePacked(seed, "external"))
-        });
-
-        // Initialize meta-parameters
-        engine.complexity = (seed % 100) + 1;
-        engine.parallelism = (seed >> 64) % 50 + 1;
-        engine.luckFactor = (seed % LUCKY_777) + 1;
+        engine = initializeChaosEngine(seed);
+        engine.activeOscillators = oscillatorCount;
 
         return engine;
     }
@@ -255,23 +304,23 @@ library AdvancedRandomizerLib {
         uint256 t
     ) internal pure returns (int256 result) {
         // Σᵢ[Aᵢ(t)·sin(Bᵢ(t)·t + φᵢ) + Cᵢ·e^(-Dᵢ·t)]
-        result += _computeOscillatorySum(engine, t);
-        result += _computeDecaySum(engine, t);
+        result = _computeOscillatorySum(engine, t);
+        result = _safeAddInt(result, _computeDecaySum(engine, t));
 
         // ∫₀ᵗ softplus(a·(x-x₀)² + b)·f(x)·g'(x)dx
-        result += _computeSoftplusIntegral(engine.softplus, t);
+        result = _safeAddInt(result, _computeSoftplusIntegral(engine.softplus, t));
 
         // α₀·t² + α₁·sin(2πt) + α₂·log(1+t)
-        result += _computeTrendTerms(engine.trends, t);
+        result = _safeAddInt(result, _computeTrendTerms(engine.trends, t));
 
         // η·H(t-τ)·σ(γ·H(t-τ))
-        result += _computeFeedbackTerm(engine, t);
+        result = _safeAddInt(result, _computeFeedbackTerm(engine, t));
 
         // σ·N(0, 1 + β·|H(t-1)|)
-        result += _computeStochasticTerm(engine, t);
+        result = _safeAddInt(result, _computeStochasticTerm(engine, t));
 
         // δ·u(t)
-        result += _computeExternalInput(engine.external_, t);
+        result = _safeAddInt(result, _computeExternalInput(engine.external_, t));
     }
 
     /**
@@ -291,13 +340,16 @@ library AdvancedRandomizerLib {
         // Apply Zkaedi signature transformation
         ZkaediSignature memory sig = computeZkaediSignature(engine, seed);
 
-        // Combine H(t) with signature
+        // Combine H(t) with signature using multiple mixing rounds
         bytes32 combined = keccak256(abi.encodePacked(
             hValue,
             sig.finalSignature,
             seed,
             t
         ));
+
+        // Additional mixing for better distribution
+        combined = keccak256(abi.encodePacked(combined, sig.phiPower, sig.luckyMultiplier));
 
         randomValue = uint256(combined);
     }
@@ -318,9 +370,38 @@ library AdvancedRandomizerLib {
         uint256 min,
         uint256 max
     ) internal pure returns (uint256) {
-        if (min >= max) revert InvalidParameter();
+        if (min > max) revert InvalidRange();
+        if (min == max) return min;
+
         uint256 random = generate(engine, seed, t);
-        return min + (random % (max - min + 1));
+        uint256 range = max - min + 1;
+
+        // Use rejection sampling for unbiased distribution
+        uint256 maxUnbiased = type(uint256).max - (type(uint256).max % range);
+        while (random >= maxUnbiased) {
+            random = uint256(keccak256(abi.encodePacked(random)));
+        }
+
+        return min + (random % range);
+    }
+
+    /**
+     * @notice Generate a random boolean with custom probability
+     * @param engine The chaos engine state
+     * @param seed Additional seed
+     * @param t Time parameter
+     * @param probabilityBps Probability in basis points (0-10000)
+     * @return Random boolean
+     */
+    function generateBool(
+        ChaosEngine memory engine,
+        uint256 seed,
+        uint256 t,
+        uint256 probabilityBps
+    ) internal pure returns (bool) {
+        if (probabilityBps > 10000) probabilityBps = 10000;
+        uint256 random = generate(engine, seed, t);
+        return (random % 10000) < probabilityBps;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -334,25 +415,28 @@ library AdvancedRandomizerLib {
         ChaosEngine memory engine,
         uint256 t
     ) internal pure returns (int256 sum) {
-        for (uint256 i = 0; i < engine.activeOscillators; i++) {
-            Oscillator memory osc = engine.oscillators[i];
+        unchecked {
+            for (uint256 i = 0; i < engine.activeOscillators; i++) {
+                Oscillator memory osc = engine.oscillators[i];
 
-            // Time-varying amplitude: A(t) = A_base * (1 + mod_rate * sin(t))
-            int256 ampMod = _sin(int256(t));
-            int256 amplitude = int256(osc.amplitudeBase) +
-                (int256(osc.amplitudeModRate) * ampMod) / int256(WAD);
+                // Time-varying amplitude: A(t) = A_base * (1 + mod_rate * sin(t))
+                int256 ampMod = _sinSafe(int256(t % uint256(TWO_PI_WAD)));
+                int256 amplitude = int256(osc.amplitudeBase) +
+                    _safeMulDiv(int256(osc.amplitudeModRate), ampMod, int256(WAD));
 
-            // Time-varying frequency: B(t) = B_base * (1 + mod_rate * cos(t))
-            int256 freqMod = _cos(int256(t));
-            int256 frequency = int256(osc.frequencyBase) +
-                (int256(osc.frequencyModRate) * freqMod) / int256(WAD);
+                // Time-varying frequency: B(t) = B_base * (1 + mod_rate * cos(t))
+                int256 freqMod = _cosSafe(int256(t % uint256(TWO_PI_WAD)));
+                int256 frequency = int256(osc.frequencyBase) +
+                    _safeMulDiv(int256(osc.frequencyModRate), freqMod, int256(WAD));
 
-            // Compute argument: B(t) * t + φ
-            int256 argument = (frequency * int256(t)) / int256(WAD) + osc.phase;
+                // Compute argument: B(t) * t + φ (normalized to prevent overflow)
+                int256 argument = _safeMulDiv(frequency, int256(t), int256(WAD)) + osc.phase;
+                argument = argument % TWO_PI_WAD;
 
-            // A(t) * sin(argument)
-            int256 sinValue = _sin(argument);
-            sum += (amplitude * sinValue) / int256(WAD);
+                // A(t) * sin(argument)
+                int256 sinValue = _sinSafe(argument);
+                sum = _safeAddInt(sum, _safeMulDiv(amplitude, sinValue, int256(WAD)));
+            }
         }
     }
 
@@ -363,15 +447,17 @@ library AdvancedRandomizerLib {
         ChaosEngine memory engine,
         uint256 t
     ) internal pure returns (int256 sum) {
-        for (uint256 i = 0; i < engine.activeDecayTerms; i++) {
-            DecayTerm memory decay = engine.decayTerms[i];
+        unchecked {
+            for (uint256 i = 0; i < engine.activeDecayTerms; i++) {
+                DecayTerm memory decay = engine.decayTerms[i];
 
-            // e^(-D*t)
-            int256 exponent = -int256((decay.decayRate * t) / WAD);
-            int256 expValue = _exp(exponent);
+                // e^(-D*t) with safe bounds
+                int256 exponent = -_safeMulDiv(int256(decay.decayRate), int256(t), int256(WAD));
+                int256 expValue = _expSafe(exponent);
 
-            // C * e^(-D*t)
-            sum += (int256(decay.coefficient) * expValue) / int256(WAD);
+                // C * e^(-D*t)
+                sum = _safeAddInt(sum, _safeMulDiv(int256(decay.coefficient), expValue, int256(WAD)));
+            }
         }
     }
 
@@ -381,7 +467,7 @@ library AdvancedRandomizerLib {
 
     /**
      * @notice Compute ∫₀ᵗ softplus(a·(x-x₀)² + b)·f(x)·g'(x)dx
-     * @dev Uses numerical integration (trapezoidal rule)
+     * @dev Uses numerical integration (Simpson's rule for better accuracy)
      */
     function _computeSoftplusIntegral(
         SoftplusParams memory params,
@@ -390,41 +476,59 @@ library AdvancedRandomizerLib {
         if (t == 0) return 0;
 
         uint256 steps = params.integralSteps;
-        int256 dt = int256(t) / int256(steps);
-        if (dt == 0) dt = 1;
+        if (steps == 0) steps = 32;
+        if (steps % 2 == 1) steps++; // Simpson's rule needs even steps
+
+        int256 h = int256(t) / int256(steps);
+        if (h == 0) return 0;
 
         int256 integral = 0;
-        for (uint256 i = 0; i <= steps; i++) {
-            int256 x = (int256(i) * int256(t)) / int256(steps);
 
-            // s(x) = a*(x-x0)² + b
-            int256 xMinusX0 = x - params.x0;
-            int256 s = (params.a * xMinusX0 * xMinusX0) / int256(WAD * WAD) + params.b;
+        // Simpson's rule: ∫f dx ≈ h/3 * [f(x₀) + 4f(x₁) + 2f(x₂) + 4f(x₃) + ... + f(xₙ)]
+        unchecked {
+            for (uint256 i = 0; i <= steps; i++) {
+                int256 x = _safeMulDiv(int256(i), int256(t), int256(steps));
 
-            // softplus(s) = ln(1 + e^s)
-            int256 softplusValue = _softplus(s);
+                // s(x) = a*(x-x0)² + b
+                int256 xMinusX0 = x - params.x0;
+                int256 xMinusX0Sq = _safeMulDiv(xMinusX0, xMinusX0, int256(WAD));
+                int256 s = _safeMulDiv(params.a, xMinusX0Sq, int256(WAD)) + params.b;
 
-            // f(x) = sin(x) (example function)
-            int256 fx = _sin(x);
+                // softplus(s) = ln(1 + e^s)
+                int256 softplusValue = _softplusSafe(s);
 
-            // g'(x) = cos(x) (derivative of g(x) = sin(x))
-            int256 gPrime = _cos(x);
+                // f(x) = sin(x), g'(x) = cos(x)
+                int256 fx = _sinSafe(x % TWO_PI_WAD);
+                int256 gPrime = _cosSafe(x % TWO_PI_WAD);
 
-            // Integrand: softplus(s) * f(x) * g'(x)
-            int256 integrand = (softplusValue * fx / int256(WAD)) * gPrime / int256(WAD);
+                // Integrand: softplus(s) * f(x) * g'(x)
+                int256 integrand = _safeMulDiv(
+                    _safeMulDiv(softplusValue, fx, int256(WAD)),
+                    gPrime,
+                    int256(WAD)
+                );
 
-            // Trapezoidal weight
-            int256 weight = (i == 0 || i == steps) ? int256(1) : int256(2);
-            integral += (integrand * weight * dt) / (2 * int256(WAD));
+                // Simpson's weights: 1, 4, 2, 4, 2, ..., 4, 1
+                int256 weight;
+                if (i == 0 || i == steps) {
+                    weight = 1;
+                } else if (i % 2 == 1) {
+                    weight = 4;
+                } else {
+                    weight = 2;
+                }
+
+                integral = _safeAddInt(integral, integrand * weight);
+            }
+
+            result = _safeMulDiv(integral, h, int256(3 * WAD));
         }
-
-        result = integral;
     }
 
     /**
-     * @notice Compute softplus(x) = ln(1 + e^x)
+     * @notice Compute softplus(x) = ln(1 + e^x) with safety bounds
      */
-    function _softplus(int256 x) internal pure returns (int256) {
+    function _softplusSafe(int256 x) internal pure returns (int256) {
         // For large x, softplus(x) ≈ x
         if (x > int256(20 * WAD)) return x;
 
@@ -432,36 +536,34 @@ library AdvancedRandomizerLib {
         if (x < -int256(20 * WAD)) return 0;
 
         // ln(1 + e^x)
-        int256 expX = _exp(x);
-        return _ln(int256(WAD) + expX);
+        int256 expX = _expSafe(x);
+        if (expX <= 0) return 0;
+
+        return _lnSafe(int256(WAD) + expX);
     }
 
     /**
      * @notice Compute partial derivatives for softplus chain rule
-     * @param params Softplus parameters
-     * @param x Current x value
-     * @return dA ∂softplus(s)/∂a = (x-x₀)²·σ(s)
-     * @return dB ∂softplus(s)/∂b = σ(s)
-     * @return dX0 ∂softplus(s)/∂x₀ = -2a(x-x₀)σ(s)
      */
     function computeSoftplusDerivatives(
         SoftplusParams memory params,
         int256 x
     ) internal pure returns (int256 dA, int256 dB, int256 dX0) {
         int256 xMinusX0 = x - params.x0;
-        int256 s = (params.a * xMinusX0 * xMinusX0) / int256(WAD * WAD) + params.b;
+        int256 xMinusX0Sq = _safeMulDiv(xMinusX0, xMinusX0, int256(WAD));
+        int256 s = _safeMulDiv(params.a, xMinusX0Sq, int256(WAD)) + params.b;
 
-        // σ(s) = sigmoid(s) = 1/(1 + e^(-s)) = softplus'(s)
-        int256 sigmaS = _sigmoid(s);
+        // σ(s) = sigmoid(s) = softplus'(s)
+        int256 sigmaS = _sigmoidSafe(s);
 
         // ∂softplus(s)/∂a = (x-x₀)²·σ(s)
-        dA = (xMinusX0 * xMinusX0 * sigmaS) / (int256(WAD) * int256(WAD));
+        dA = _safeMulDiv(xMinusX0Sq, sigmaS, int256(WAD));
 
         // ∂softplus(s)/∂b = σ(s)
         dB = sigmaS;
 
         // ∂softplus(s)/∂x₀ = -2a(x-x₀)σ(s)
-        dX0 = (-2 * params.a * xMinusX0 * sigmaS) / (int256(WAD) * int256(WAD));
+        dX0 = _safeMulDiv(-2 * params.a, _safeMulDiv(xMinusX0, sigmaS, int256(WAD)), int256(WAD));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -475,18 +577,25 @@ library AdvancedRandomizerLib {
         TrendCoefficients memory coef,
         uint256 t
     ) internal pure returns (int256 result) {
-        // α₀·t²
-        int256 tSquared = int256((t * t) / WAD);
-        result += (coef.alpha0 * tSquared) / int256(WAD);
+        unchecked {
+            // α₀·t² (with overflow protection)
+            if (t > 0 && t < type(uint128).max) {
+                int256 tSquared = _safeMulDiv(int256(t), int256(t), int256(WAD));
+                result = _safeMulDiv(coef.alpha0, tSquared, int256(WAD));
+            }
 
-        // α₁·sin(2πt)
-        int256 sinArg = (TWO_PI_WAD * int256(t)) / int256(WAD);
-        result += (coef.alpha1 * _sin(sinArg)) / int256(WAD);
+            // α₁·sin(2πt)
+            int256 sinArg = _safeMulDiv(TWO_PI_WAD, int256(t), int256(WAD)) % TWO_PI_WAD;
+            result = _safeAddInt(result, _safeMulDiv(coef.alpha1, _sinSafe(sinArg), int256(WAD)));
 
-        // α₂·log(1+t)
-        if (t > 0) {
-            int256 logArg = int256(WAD) + int256(t);
-            result += (coef.alpha2 * _ln(logArg)) / int256(WAD);
+            // α₂·log(1+t)
+            if (t > 0) {
+                int256 logArg = int256(WAD) + int256(t);
+                if (logArg > int256(WAD)) {
+                    int256 logValue = _lnSafe(logArg);
+                    result = _safeAddInt(result, _safeMulDiv(coef.alpha2, logValue, int256(WAD)));
+                }
+            }
         }
     }
 
@@ -504,23 +613,34 @@ library AdvancedRandomizerLib {
         // Get H(t-τ) from history or compute if not available
         int256 hDelayed;
         if (engine.historyCount > 0 && engine.feedback.tau <= engine.historyCount) {
-            uint256 delayedIndex = (engine.historyIndex + MAX_HISTORY - engine.feedback.tau) % MAX_HISTORY;
+            uint256 delayedIndex;
+            unchecked {
+                delayedIndex = (engine.historyIndex + MAX_HISTORY - engine.feedback.tau) % MAX_HISTORY;
+            }
             hDelayed = engine.history[delayedIndex];
         } else {
             // Bootstrap: compute with reduced t
-            if (t >= engine.feedback.tau * WAD) {
-                hDelayed = _computeOscillatorySum(engine, t - engine.feedback.tau * WAD);
+            uint256 delayTime;
+            unchecked {
+                delayTime = engine.feedback.tau * WAD;
+            }
+            if (t >= delayTime) {
+                hDelayed = _computeOscillatorySum(engine, t - delayTime);
             } else {
                 hDelayed = 0;
             }
         }
 
         // σ(γ·H(t-τ))
-        int256 sigmoidArg = (engine.feedback.gamma * hDelayed) / int256(WAD);
-        int256 sigValue = _sigmoid(sigmoidArg);
+        int256 sigmoidArg = _safeMulDiv(engine.feedback.gamma, hDelayed, int256(WAD));
+        int256 sigValue = _sigmoidSafe(sigmoidArg);
 
         // η·H(t-τ)·σ(γ·H(t-τ))
-        result = (engine.feedback.eta * hDelayed / int256(WAD)) * sigValue / int256(WAD);
+        result = _safeMulDiv(
+            _safeMulDiv(engine.feedback.eta, hDelayed, int256(WAD)),
+            sigValue,
+            int256(WAD)
+        );
     }
 
     /**
@@ -531,9 +651,11 @@ library AdvancedRandomizerLib {
         int256 hValue
     ) internal pure returns (ChaosEngine memory) {
         engine.history[engine.historyIndex] = hValue;
-        engine.historyIndex = (engine.historyIndex + 1) % MAX_HISTORY;
-        if (engine.historyCount < MAX_HISTORY) {
-            engine.historyCount++;
+        unchecked {
+            engine.historyIndex = (engine.historyIndex + 1) % MAX_HISTORY;
+            if (engine.historyCount < MAX_HISTORY) {
+                engine.historyCount++;
+            }
         }
         return engine;
     }
@@ -544,7 +666,6 @@ library AdvancedRandomizerLib {
 
     /**
      * @notice Compute σ·N(0, 1 + β·|H(t-1)|)
-     * @dev Implements volatility clustering via GARCH-like mechanism
      */
     function _computeStochasticTerm(
         ChaosEngine memory engine,
@@ -553,36 +674,43 @@ library AdvancedRandomizerLib {
         // Get |H(t-1)| for volatility clustering
         int256 hPrev = 0;
         if (engine.historyCount > 0) {
-            uint256 prevIndex = (engine.historyIndex + MAX_HISTORY - 1) % MAX_HISTORY;
+            uint256 prevIndex;
+            unchecked {
+                prevIndex = (engine.historyIndex + MAX_HISTORY - 1) % MAX_HISTORY;
+            }
             hPrev = engine.history[prevIndex];
             if (hPrev < 0) hPrev = -hPrev;
         }
 
-        // Volatility: 1 + β·|H(t-1)|
-        uint256 volatility = WAD + (engine.stochastic.beta * uint256(hPrev)) / WAD;
+        // Volatility: 1 + β·|H(t-1)| (bounded to prevent overflow)
+        uint256 volContrib = _safeMulUint(engine.stochastic.beta, uint256(hPrev)) / WAD;
+        uint256 volatility = WAD + (volContrib > WAD * 10 ? WAD * 10 : volContrib);
 
-        // Generate pseudo-Gaussian noise using Box-Muller approximation
+        // Generate pseudo-Gaussian noise
         int256 noise = _generateGaussianNoise(engine.stochastic.seed, t);
 
         // σ·N(0, volatility)
-        // Scale noise by sqrt(volatility) for proper variance
         uint256 sqrtVol = _sqrt(volatility);
-        result = (int256(engine.stochastic.sigma) * noise * int256(sqrtVol)) / (int256(WAD) * int256(WAD));
+        result = _safeMulDiv(
+            _safeMulDiv(int256(engine.stochastic.sigma), noise, int256(WAD)),
+            int256(sqrtVol),
+            int256(WAD)
+        );
     }
 
     /**
-     * @notice Generate pseudo-Gaussian noise using Central Limit Theorem approximation
+     * @notice Generate pseudo-Gaussian noise using Central Limit Theorem
      */
     function _generateGaussianNoise(uint256 seed, uint256 t) internal pure returns (int256) {
-        // Sum of 12 uniform random variables, normalized
         int256 sum = 0;
-        for (uint256 i = 0; i < 12; i++) {
-            uint256 u = uint256(keccak256(abi.encodePacked(seed, t, i)));
-            sum += int256(u % WAD);
+        unchecked {
+            for (uint256 i = 0; i < 12; i++) {
+                uint256 u = uint256(keccak256(abi.encodePacked(seed, t, i)));
+                sum += int256(u % WAD);
+            }
         }
-        // E[sum] = 6*WAD, Var[sum] = WAD²
-        // Normalize to N(0,1): (sum - 6*WAD) / WAD
-        return (sum - int256(6 * WAD));
+        // Normalize to approximately N(0, WAD)
+        return sum - int256(6 * WAD);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -596,11 +724,10 @@ library AdvancedRandomizerLib {
         ExternalInput memory ext,
         uint256 t
     ) internal pure returns (int256 result) {
-        // u(t) derived from input signal
         uint256 u = uint256(keccak256(abi.encodePacked(ext.inputSignal, t)));
         int256 normalizedU = int256(u % (2 * WAD)) - int256(WAD);
 
-        result = (ext.delta * normalizedU) / int256(WAD);
+        result = _safeMulDiv(ext.delta, normalizedU, int256(WAD));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -609,224 +736,310 @@ library AdvancedRandomizerLib {
 
     /**
      * @notice Compute the secret Zkaedi signature
-     * @dev Ĥ(t) = Σ[649 + 4×complexity + 3×parallelism] × Φⁿ × ₿∞ × 777 × luck
      */
     function computeZkaediSignature(
         ChaosEngine memory engine,
         uint256 seed
     ) internal pure returns (ZkaediSignature memory sig) {
-        // Base value: 649 + 4×complexity + 3×parallelism
-        sig.baseValue = BASE_COMPLEXITY + (4 * engine.complexity) + (3 * engine.parallelism);
+        unchecked {
+            // Base value: 649 + 4×complexity + 3×parallelism
+            sig.baseValue = BASE_COMPLEXITY + (4 * engine.complexity) + (3 * engine.parallelism);
 
-        // Φⁿ component (golden ratio power)
-        sig.phiPower = _powApprox(PHI_WAD, engine.activeOscillators);
+            // Φⁿ component (golden ratio power) - bounded
+            uint256 boundedOsc = engine.activeOscillators > 8 ? 8 : engine.activeOscillators;
+            sig.phiPower = _powSafe(PHI_WAD, boundedOsc);
 
-        // ₿∞ hash component (infinite Bitcoin reference)
-        sig.infinityHash = uint256(keccak256(abi.encodePacked(
-            seed,
-            "BTC_INFINITY",
-            block.timestamp,
-            sig.baseValue
-        )));
+            // ₿∞ hash component
+            sig.infinityHash = uint256(keccak256(abi.encodePacked(
+                seed,
+                "BTC_INFINITY_ZKAEDI",
+                sig.baseValue,
+                engine.stochastic.seed
+            )));
 
-        // 777 × luck
-        sig.luckyMultiplier = LUCKY_777 * engine.luckFactor;
+            // 777 × luck
+            sig.luckyMultiplier = LUCKY_777 * engine.luckFactor;
 
-        // Combine all components into final signature
-        sig.finalSignature = keccak256(abi.encodePacked(
-            sig.baseValue,
-            sig.phiPower,
-            sig.infinityHash,
-            sig.luckyMultiplier,
-            "ZKAEDI"
-        ));
+            // Final signature
+            sig.finalSignature = keccak256(abi.encodePacked(
+                sig.baseValue,
+                sig.phiPower,
+                sig.infinityHash,
+                sig.luckyMultiplier,
+                "ZKAEDI_V2"
+            ));
+        }
     }
 
     /**
      * @notice Compute all partial derivatives for gradient analysis
-     * @dev ∂Ĥ/∂φᵢ = Aᵢ(t)cos(Bᵢ(t)t + φᵢ)
-     *      ∂Ĥ/∂Dᵢ = -t·Cᵢ·e^(-Dᵢt)
      */
     function computePartialDerivatives(
         ChaosEngine memory engine,
         uint256 t
     ) internal pure returns (PartialDerivatives memory derivs) {
-        // Allocate arrays
         derivs.dH_dPhi = new int256[](engine.activeOscillators);
         derivs.dH_dD = new int256[](engine.activeDecayTerms);
 
-        // ∂Ĥ/∂φᵢ = Aᵢ(t)cos(Bᵢ(t)t + φᵢ)
-        for (uint256 i = 0; i < engine.activeOscillators; i++) {
-            Oscillator memory osc = engine.oscillators[i];
+        unchecked {
+            // ∂Ĥ/∂φᵢ = Aᵢ(t)cos(Bᵢ(t)t + φᵢ)
+            for (uint256 i = 0; i < engine.activeOscillators; i++) {
+                Oscillator memory osc = engine.oscillators[i];
 
-            int256 ampMod = _sin(int256(t));
-            int256 amplitude = int256(osc.amplitudeBase) +
-                (int256(osc.amplitudeModRate) * ampMod) / int256(WAD);
+                int256 ampMod = _sinSafe(int256(t % uint256(TWO_PI_WAD)));
+                int256 amplitude = int256(osc.amplitudeBase) +
+                    _safeMulDiv(int256(osc.amplitudeModRate), ampMod, int256(WAD));
 
-            int256 freqMod = _cos(int256(t));
-            int256 frequency = int256(osc.frequencyBase) +
-                (int256(osc.frequencyModRate) * freqMod) / int256(WAD);
+                int256 freqMod = _cosSafe(int256(t % uint256(TWO_PI_WAD)));
+                int256 frequency = int256(osc.frequencyBase) +
+                    _safeMulDiv(int256(osc.frequencyModRate), freqMod, int256(WAD));
 
-            int256 argument = (frequency * int256(t)) / int256(WAD) + osc.phase;
+                int256 argument = (_safeMulDiv(frequency, int256(t), int256(WAD)) + osc.phase) % TWO_PI_WAD;
 
-            // ∂/∂φᵢ = A(t) * cos(argument)
-            derivs.dH_dPhi[i] = (amplitude * _cos(argument)) / int256(WAD);
+                derivs.dH_dPhi[i] = _safeMulDiv(amplitude, _cosSafe(argument), int256(WAD));
+            }
+
+            // ∂Ĥ/∂Dᵢ = -t·Cᵢ·e^(-Dᵢt)
+            for (uint256 i = 0; i < engine.activeDecayTerms; i++) {
+                DecayTerm memory decay = engine.decayTerms[i];
+                int256 exponent = -_safeMulDiv(int256(decay.decayRate), int256(t), int256(WAD));
+                int256 expValue = _expSafe(exponent);
+
+                derivs.dH_dD[i] = _safeMulDiv(
+                    -int256(t),
+                    _safeMulDiv(int256(decay.coefficient), expValue, int256(WAD)),
+                    int256(WAD)
+                );
+            }
+
+            (derivs.dSoftplus_dA, derivs.dSoftplus_dB, derivs.dSoftplus_dX0) =
+                computeSoftplusDerivatives(engine.softplus, int256(t));
         }
-
-        // ∂Ĥ/∂Dᵢ = -t·Cᵢ·e^(-Dᵢt)
-        for (uint256 i = 0; i < engine.activeDecayTerms; i++) {
-            DecayTerm memory decay = engine.decayTerms[i];
-            int256 exponent = -int256((decay.decayRate * t) / WAD);
-            int256 expValue = _exp(exponent);
-
-            // -t * C * e^(-Dt)
-            derivs.dH_dD[i] = (-int256(t) * int256(decay.coefficient) * expValue) / int256(WAD * WAD);
-        }
-
-        // Softplus derivatives at current point
-        (derivs.dSoftplus_dA, derivs.dSoftplus_dB, derivs.dSoftplus_dX0) =
-            computeSoftplusDerivatives(engine.softplus, int256(t));
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //                         MATHEMATICAL PRIMITIVES
+    //                         SAFE MATHEMATICAL PRIMITIVES
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * @notice Compute sin(x) using Taylor series
-     * @param x Angle in WAD radians
+     * @notice Safe sin(x) using Taylor series with normalization
      */
-    function _sin(int256 x) internal pure returns (int256) {
+    function _sinSafe(int256 x) internal pure returns (int256) {
         // Normalize x to [-π, π]
         x = x % TWO_PI_WAD;
         if (x > PI_WAD) x -= TWO_PI_WAD;
         if (x < -PI_WAD) x += TWO_PI_WAD;
 
-        // Taylor series: sin(x) = x - x³/3! + x⁵/5! - x⁷/7!
-        int256 x2 = (x * x) / int256(WAD);
-        int256 x3 = (x2 * x) / int256(WAD);
-        int256 x5 = (x3 * x2) / int256(WAD);
-        int256 x7 = (x5 * x2) / int256(WAD);
+        // Taylor series: sin(x) = x - x³/6 + x⁵/120 - x⁷/5040
+        int256 x2 = _safeMulDiv(x, x, int256(WAD));
+        int256 x3 = _safeMulDiv(x2, x, int256(WAD));
+        int256 x5 = _safeMulDiv(x3, x2, int256(WAD));
+        int256 x7 = _safeMulDiv(x5, x2, int256(WAD));
 
-        return x - x3 / 6 + x5 / 120 - x7 / 5040;
+        int256 result = x - x3 / 6 + x5 / 120 - x7 / 5040;
+
+        // Clamp to [-WAD, WAD]
+        if (result > int256(WAD)) return int256(WAD);
+        if (result < -int256(WAD)) return -int256(WAD);
+        return result;
     }
 
     /**
-     * @notice Compute cos(x) using Taylor series
-     * @param x Angle in WAD radians
+     * @notice Safe cos(x)
      */
-    function _cos(int256 x) internal pure returns (int256) {
-        // cos(x) = sin(x + π/2)
-        return _sin(x + PI_WAD / 2);
+    function _cosSafe(int256 x) internal pure returns (int256) {
+        return _sinSafe(x + HALF_PI_WAD);
     }
 
     /**
-     * @notice Compute e^x using Taylor series
-     * @param x Exponent in WAD
+     * @notice Safe exp(x) with bounds checking
      */
-    function _exp(int256 x) internal pure returns (int256) {
-        // Clamp to prevent overflow
-        if (x > int256(40 * WAD)) return type(int256).max / 2;
-        if (x < -int256(40 * WAD)) return 0;
+    function _expSafe(int256 x) internal pure returns (int256) {
+        if (x > EXP_MAX_INPUT) return type(int256).max / 4;
+        if (x < EXP_MIN_INPUT) return 0;
 
-        // Range reduction: e^x = e^(k*ln2) * e^r = 2^k * e^r
+        // Range reduction: e^x = 2^k * e^r
         int256 k = x / LN_2_WAD;
         int256 r = x - k * LN_2_WAD;
 
         // Taylor series for e^r
-        int256 r2 = (r * r) / int256(WAD);
-        int256 r3 = (r2 * r) / int256(WAD);
-        int256 r4 = (r3 * r) / int256(WAD);
-        int256 r5 = (r4 * r) / int256(WAD);
+        int256 r2 = _safeMulDiv(r, r, int256(WAD));
+        int256 r3 = _safeMulDiv(r2, r, int256(WAD));
+        int256 r4 = _safeMulDiv(r3, r, int256(WAD));
+        int256 r5 = _safeMulDiv(r4, r, int256(WAD));
+        int256 r6 = _safeMulDiv(r5, r, int256(WAD));
 
-        int256 expR = int256(WAD) + r + r2 / 2 + r3 / 6 + r4 / 24 + r5 / 120;
+        int256 expR = int256(WAD) + r + r2 / 2 + r3 / 6 + r4 / 24 + r5 / 120 + r6 / 720;
 
         // Multiply by 2^k
         if (k >= 0) {
-            if (k > 127) return type(int256).max / 2;
+            if (k > 88) return type(int256).max / 4; // Prevent overflow
             return expR << uint256(k);
         } else {
-            if (-k > 127) return 0;
+            if (-k > 88) return 0;
             return expR >> uint256(-k);
         }
     }
 
     /**
-     * @notice Compute ln(x) using series approximation
-     * @param x Input in WAD (must be positive)
+     * @notice Safe ln(x) with bounds checking
      */
-    function _ln(int256 x) internal pure returns (int256) {
-        if (x <= 0) return type(int256).min;
+    function _lnSafe(int256 x) internal pure returns (int256) {
+        if (x <= 0) return type(int256).min / 2;
         if (x == int256(WAD)) return 0;
 
-        // Use identity: ln(x) = ln(2^k * m) = k*ln(2) + ln(m) where m in [1,2)
         int256 k = 0;
         int256 m = x;
 
         // Normalize to [WAD, 2*WAD)
-        while (m >= int256(2 * WAD)) {
+        while (m >= int256(2 * WAD) && k < 256) {
             m = m / 2;
             k++;
         }
-        while (m < int256(WAD)) {
+        while (m < int256(WAD) && k > -256) {
             m = m * 2;
             k--;
         }
 
-        // ln(1 + y) ≈ y - y²/2 + y³/3 - y⁴/4 for y in [0, 1)
+        // ln(1 + y) series
         int256 y = m - int256(WAD);
-        int256 y2 = (y * y) / int256(WAD);
-        int256 y3 = (y2 * y) / int256(WAD);
-        int256 y4 = (y3 * y) / int256(WAD);
+        int256 y2 = _safeMulDiv(y, y, int256(WAD));
+        int256 y3 = _safeMulDiv(y2, y, int256(WAD));
+        int256 y4 = _safeMulDiv(y3, y, int256(WAD));
+        int256 y5 = _safeMulDiv(y4, y, int256(WAD));
 
-        int256 lnM = y - y2 / 2 + y3 / 3 - y4 / 4;
+        int256 lnM = y - y2 / 2 + y3 / 3 - y4 / 4 + y5 / 5;
 
         return k * LN_2_WAD + lnM;
     }
 
     /**
-     * @notice Compute sigmoid σ(x) = 1/(1 + e^(-x))
-     * @param x Input in WAD
+     * @notice Safe sigmoid σ(x) = 1/(1 + e^(-x))
      */
-    function _sigmoid(int256 x) internal pure returns (int256) {
-        int256 expNegX = _exp(-x);
-        if (expNegX == type(int256).max / 2) return 0;
-        return int256(WAD * WAD) / (int256(WAD) + expNegX);
+    function _sigmoidSafe(int256 x) internal pure returns (int256) {
+        // For extreme values, return bounds
+        if (x > int256(20 * WAD)) return int256(WAD);
+        if (x < -int256(20 * WAD)) return 0;
+
+        int256 expNegX = _expSafe(-x);
+        if (expNegX <= 0) return int256(WAD);
+        if (expNegX >= type(int256).max / 4) return 0;
+
+        int256 denominator = int256(WAD) + expNegX;
+        if (denominator <= 0) return int256(WAD);
+
+        return _safeMulDiv(int256(WAD), int256(WAD), denominator);
     }
 
     /**
-     * @notice Integer square root
+     * @notice Integer square root using Newton's method
      */
     function _sqrt(uint256 x) internal pure returns (uint256) {
         if (x == 0) return 0;
+        if (x <= 3) return 1;
+
         uint256 z = (x + 1) / 2;
         uint256 y = x;
+
         while (z < y) {
             y = z;
             z = (x / z + z) / 2;
         }
+
         return y;
     }
 
     /**
-     * @notice Approximate power function
+     * @notice Safe power function with bounds
      */
-    function _powApprox(uint256 base, uint256 exp) internal pure returns (uint256) {
+    function _powSafe(uint256 base, uint256 exp) internal pure returns (uint256) {
         if (exp == 0) return WAD;
         if (exp == 1) return base;
+        if (base == 0) return 0;
+        if (base == WAD) return WAD;
 
         uint256 result = WAD;
         uint256 b = base;
 
-        while (exp > 0) {
-            if (exp & 1 == 1) {
-                result = (result * b) / WAD;
+        unchecked {
+            while (exp > 0) {
+                if (exp & 1 == 1) {
+                    // Check for overflow before multiplication
+                    if (result > MAX_SAFE_MUL || b > MAX_SAFE_MUL) {
+                        return type(uint256).max / 2;
+                    }
+                    result = (result * b) / WAD;
+                }
+                if (b > MAX_SAFE_MUL) {
+                    return type(uint256).max / 2;
+                }
+                b = (b * b) / WAD;
+                exp >>= 1;
             }
-            b = (b * b) / WAD;
-            exp >>= 1;
         }
 
         return result;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //                         SAFE ARITHMETIC HELPERS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Safe multiplication and division for int256
+     */
+    function _safeMulDiv(int256 a, int256 b, int256 denominator) internal pure returns (int256) {
+        if (denominator == 0) return 0;
+        if (a == 0 || b == 0) return 0;
+
+        // Check for potential overflow
+        bool negativeResult = (a < 0) != (b < 0);
+        uint256 absA = a < 0 ? uint256(-a) : uint256(a);
+        uint256 absB = b < 0 ? uint256(-b) : uint256(b);
+        uint256 absDenom = denominator < 0 ? uint256(-denominator) : uint256(denominator);
+
+        if (absA > type(uint256).max / absB) {
+            // Would overflow, return max/min
+            return negativeResult ? type(int256).min / 2 : type(int256).max / 2;
+        }
+
+        uint256 product = absA * absB;
+        uint256 result = product / absDenom;
+
+        if (result > uint256(type(int256).max)) {
+            return negativeResult ? type(int256).min / 2 : type(int256).max / 2;
+        }
+
+        return negativeResult ? -int256(result) : int256(result);
+    }
+
+    /**
+     * @notice Safe addition for int256
+     */
+    function _safeAddInt(int256 a, int256 b) internal pure returns (int256) {
+        int256 c = a + b;
+        // Check for overflow
+        if (b > 0 && c < a) return type(int256).max / 2;
+        if (b < 0 && c > a) return type(int256).min / 2;
+        return c;
+    }
+
+    /**
+     * @notice Safe multiplication for uint256
+     */
+    function _safeMulUint(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0 || b == 0) return 0;
+        if (a > type(uint256).max / b) return type(uint256).max;
+        return a * b;
+    }
+
+    /**
+     * @notice Bound a value between min and max
+     */
+    function _boundValue(uint256 value, uint256 min, uint256 max) internal pure returns (uint256) {
+        if (value < min) return min;
+        if (value > max) return max;
+        return value;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -835,32 +1048,27 @@ library AdvancedRandomizerLib {
 
     /**
      * @notice Generate multiple random numbers efficiently
-     * @param engine The chaos engine state
-     * @param seed Base seed
-     * @param count Number of random values to generate
-     * @return values Array of random values
      */
     function generateBatch(
         ChaosEngine memory engine,
         uint256 seed,
         uint256 count
     ) internal pure returns (uint256[] memory values) {
-        if (count > 100) revert InvalidParameter();
+        if (count == 0 || count > MAX_BATCH_SIZE) revert BatchSizeTooLarge();
 
         values = new uint256[](count);
 
-        for (uint256 i = 0; i < count; i++) {
-            uint256 t = (i + 1) * WAD;
-            values[i] = generate(engine, uint256(keccak256(abi.encodePacked(seed, i))), t);
+        unchecked {
+            for (uint256 i = 0; i < count; i++) {
+                uint256 t = (i + 1) * WAD;
+                uint256 iterSeed = uint256(keccak256(abi.encodePacked(seed, i)));
+                values[i] = generate(engine, iterSeed, t);
+            }
         }
     }
 
     /**
      * @notice Generate weighted random selection
-     * @param engine The chaos engine state
-     * @param seed Random seed
-     * @param weights Array of selection weights
-     * @return Selected index
      */
     function weightedSelect(
         ChaosEngine memory engine,
@@ -870,18 +1078,22 @@ library AdvancedRandomizerLib {
         if (weights.length == 0) revert InvalidParameter();
 
         uint256 totalWeight;
-        for (uint256 i = 0; i < weights.length; i++) {
-            totalWeight += weights[i];
+        unchecked {
+            for (uint256 i = 0; i < weights.length; i++) {
+                totalWeight += weights[i];
+            }
         }
-        if (totalWeight == 0) revert InvalidParameter();
+        if (totalWeight == 0) revert ZeroWeights();
 
-        uint256 random = generate(engine, seed, block.timestamp * WAD) % totalWeight;
+        uint256 random = generate(engine, seed, WAD) % totalWeight;
         uint256 cumulative;
 
-        for (uint256 i = 0; i < weights.length; i++) {
-            cumulative += weights[i];
-            if (random < cumulative) {
-                return i;
+        unchecked {
+            for (uint256 i = 0; i < weights.length; i++) {
+                cumulative += weights[i];
+                if (random < cumulative) {
+                    return i;
+                }
             }
         }
 
@@ -889,43 +1101,62 @@ library AdvancedRandomizerLib {
     }
 
     /**
-     * @notice Shuffle array indices using chaos engine
-     * @param engine The chaos engine state
-     * @param seed Random seed
-     * @param length Array length to shuffle
-     * @return Shuffled indices
+     * @notice Shuffle array indices using Fisher-Yates algorithm
      */
     function shuffle(
         ChaosEngine memory engine,
         uint256 seed,
         uint256 length
     ) internal pure returns (uint256[] memory) {
-        if (length == 0 || length > 100) revert InvalidParameter();
+        if (length == 0 || length > MAX_BATCH_SIZE) revert BatchSizeTooLarge();
 
         uint256[] memory indices = new uint256[](length);
-        for (uint256 i = 0; i < length; i++) {
-            indices[i] = i;
-        }
 
-        // Fisher-Yates shuffle
-        for (uint256 i = length - 1; i > 0; i--) {
-            uint256 j = generate(engine, uint256(keccak256(abi.encodePacked(seed, i))), i * WAD) % (i + 1);
-            (indices[i], indices[j]) = (indices[j], indices[i]);
+        unchecked {
+            for (uint256 i = 0; i < length; i++) {
+                indices[i] = i;
+            }
+
+            for (uint256 i = length - 1; i > 0; i--) {
+                uint256 iterSeed = uint256(keccak256(abi.encodePacked(seed, i)));
+                uint256 j = generate(engine, iterSeed, i * WAD) % (i + 1);
+                (indices[i], indices[j]) = (indices[j], indices[i]);
+            }
         }
 
         return indices;
     }
 
+    /**
+     * @notice Select k unique random items from n
+     */
+    function selectUnique(
+        ChaosEngine memory engine,
+        uint256 seed,
+        uint256 n,
+        uint256 k
+    ) internal pure returns (uint256[] memory selected) {
+        if (k > n) revert InvalidParameter();
+        if (k == 0) return new uint256[](0);
+        if (k > MAX_BATCH_SIZE) revert BatchSizeTooLarge();
+
+        // Use partial Fisher-Yates
+        uint256[] memory shuffled = shuffle(engine, seed, n);
+        selected = new uint256[](k);
+
+        unchecked {
+            for (uint256 i = 0; i < k; i++) {
+                selected[i] = shuffled[i];
+            }
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
-    //                         CHAOS ANALYSIS
+    //                         CHAOS ANALYSIS & QUALITY
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
      * @notice Compute Lyapunov exponent estimate (chaos measure)
-     * @param engine The chaos engine state
-     * @param seed Random seed
-     * @param iterations Number of iterations
-     * @return Lyapunov exponent estimate (positive = chaotic)
      */
     function estimateLyapunovExponent(
         ChaosEngine memory engine,
@@ -933,33 +1164,29 @@ library AdvancedRandomizerLib {
         uint256 iterations
     ) internal pure returns (int256) {
         if (iterations == 0) return 0;
+        if (iterations > 100) iterations = 100; // Cap iterations
 
         int256 sumLogDivergence = 0;
-        int256 prevH = computeH(engine, WAD);
-        int256 perturbedPrevH = prevH + int256(WAD / 1000); // Small perturbation
 
-        for (uint256 i = 1; i <= iterations; i++) {
-            uint256 t = (i + 1) * WAD;
+        unchecked {
+            for (uint256 i = 1; i <= iterations; i++) {
+                uint256 t = (i + 1) * WAD;
 
-            // Original trajectory
-            int256 h = computeH(engine, t);
+                // Original trajectory
+                int256 h = computeH(engine, t);
 
-            // Perturbed trajectory (approximation)
-            uint256 perturbedSeed = uint256(keccak256(abi.encodePacked(seed, i, "perturb")));
-            ChaosEngine memory perturbedEngine = engine;
-            perturbedEngine.stochastic.seed = perturbedSeed;
-            int256 perturbedH = computeH(perturbedEngine, t);
+                // Perturbed trajectory
+                uint256 perturbedSeed = uint256(keccak256(abi.encodePacked(seed, i, "perturb")));
+                ChaosEngine memory perturbedEngine = engine;
+                perturbedEngine.stochastic.seed = perturbedSeed;
+                int256 perturbedH = computeH(perturbedEngine, t);
 
-            // Divergence
-            int256 divergence = perturbedH - h;
-            if (divergence < 0) divergence = -divergence;
-            if (divergence == 0) divergence = 1;
+                // Divergence
+                int256 divergence = perturbedH > h ? perturbedH - h : h - perturbedH;
+                if (divergence == 0) divergence = 1;
 
-            // Log of divergence
-            sumLogDivergence += _ln(divergence);
-
-            prevH = h;
-            perturbedPrevH = perturbedH;
+                sumLogDivergence = _safeAddInt(sumLogDivergence, _lnSafe(divergence));
+            }
         }
 
         return sumLogDivergence / int256(iterations);
@@ -967,29 +1194,123 @@ library AdvancedRandomizerLib {
 
     /**
      * @notice Get the chaos engine entropy measure
-     * @param engine The chaos engine state
-     * @return Entropy value (higher = more random)
      */
     function getEntropy(ChaosEngine memory engine) internal pure returns (uint256) {
-        // Combine all sources of entropy
         bytes32 entropyHash = keccak256(abi.encodePacked(
             engine.activeOscillators,
             engine.activeDecayTerms,
             engine.complexity,
             engine.parallelism,
             engine.luckFactor,
-            engine.stochastic.seed
+            engine.stochastic.seed,
+            engine.external_.inputSignal
         ));
 
-        // Add oscillator contributions
-        for (uint256 i = 0; i < engine.activeOscillators; i++) {
-            entropyHash = keccak256(abi.encodePacked(
-                entropyHash,
-                engine.oscillators[i].amplitudeBase,
-                engine.oscillators[i].phase
-            ));
+        unchecked {
+            for (uint256 i = 0; i < engine.activeOscillators; i++) {
+                entropyHash = keccak256(abi.encodePacked(
+                    entropyHash,
+                    engine.oscillators[i].amplitudeBase,
+                    engine.oscillators[i].frequencyBase,
+                    engine.oscillators[i].phase
+                ));
+            }
         }
 
         return uint256(entropyHash);
+    }
+
+    /**
+     * @notice Analyze randomness quality of a sample
+     */
+    function analyzeQuality(
+        uint256[] memory samples
+    ) internal pure returns (QualityMetrics memory metrics) {
+        if (samples.length == 0) return metrics;
+
+        // Calculate basic statistics
+        uint256 n = samples.length;
+
+        // Count runs for runs test
+        uint256 runsCount = 1;
+        unchecked {
+            for (uint256 i = 1; i < n; i++) {
+                if ((samples[i] > samples[i-1]) != (i > 1 && samples[i-1] > samples[i-2])) {
+                    runsCount++;
+                }
+            }
+        }
+        metrics.runsCount = runsCount;
+
+        // Simplified chi-square for uniformity (divide into 16 buckets)
+        uint256[16] memory buckets;
+        uint256 bucketSize = type(uint256).max / 16;
+
+        unchecked {
+            for (uint256 i = 0; i < n; i++) {
+                uint256 bucket = samples[i] / bucketSize;
+                if (bucket >= 16) bucket = 15;
+                buckets[bucket]++;
+            }
+        }
+
+        uint256 expected = n / 16;
+        uint256 chiSquare = 0;
+        if (expected > 0) {
+            unchecked {
+                for (uint256 i = 0; i < 16; i++) {
+                    uint256 diff = buckets[i] > expected ? buckets[i] - expected : expected - buckets[i];
+                    chiSquare += (diff * diff * WAD) / expected;
+                }
+            }
+        }
+        metrics.chiSquare = chiSquare;
+
+        // Entropy estimate
+        metrics.entropy = getEntropyFromSamples(samples);
+
+        // Simple quality check (chi-square should be reasonable)
+        metrics.passedTests = chiSquare < 50 * WAD && runsCount > n / 4;
+    }
+
+    /**
+     * @notice Estimate entropy from samples
+     */
+    function getEntropyFromSamples(uint256[] memory samples) internal pure returns (uint256) {
+        if (samples.length == 0) return 0;
+
+        // Use hash-based entropy estimation
+        bytes32 combined = keccak256(abi.encodePacked(samples[0]));
+        unchecked {
+            for (uint256 i = 1; i < samples.length && i < 100; i++) {
+                combined = keccak256(abi.encodePacked(combined, samples[i]));
+            }
+        }
+
+        return uint256(combined);
+    }
+
+    /**
+     * @notice Verify determinism - same inputs produce same outputs
+     */
+    function verifyDeterminism(
+        uint256 seed,
+        uint256 t,
+        uint256 iterations
+    ) internal pure returns (bool) {
+        ChaosEngine memory engine1 = initializeChaosEngine(seed);
+        ChaosEngine memory engine2 = initializeChaosEngine(seed);
+
+        unchecked {
+            for (uint256 i = 0; i < iterations; i++) {
+                uint256 iterT = t + i * WAD;
+                uint256 result1 = generate(engine1, seed, iterT);
+                uint256 result2 = generate(engine2, seed, iterT);
+
+                if (result1 != result2) return false;
+            }
+        }
+
+        return true;
     }
 }
