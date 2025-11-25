@@ -370,8 +370,7 @@ library GasOptimizedTransfers {
                 // Skip invalid entries (zero address or amount)
                 if or(iszero(to), iszero(amt)) { continue }
 
-                // Accumulate total
-                totalAmount := add(totalAmount, amt)
+                // Note: totalAmount calculated before assembly for overflow protection
 
                 // Store call parameters
                 mstore(add(ptr, 0x04), to)
@@ -500,7 +499,13 @@ library GasOptimizedTransfers {
 
         uint256 gasStart = gasleft();
         uint256 succeeded;
+
+        // Calculate total with overflow protection
         uint256 totalAmount;
+        for (uint256 i; i < len; ) {
+            totalAmount += amounts[i];
+            unchecked { ++i; }
+        }
 
         /// @solidity memory-safe-assembly
         assembly {
@@ -517,7 +522,7 @@ library GasOptimizedTransfers {
 
                 if or(iszero(to), iszero(amt)) { continue }
 
-                totalAmount := add(totalAmount, amt)
+                // Note: totalAmount calculated before assembly for overflow protection
                 mstore(add(ptr, 0x24), to)
                 mstore(add(ptr, 0x44), amt)
 

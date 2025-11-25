@@ -154,7 +154,7 @@ library ReentrancyGuardLib {
         }
 
         // Check function-specific guard
-        if (guard.functionGuards & functionFlag != 0) {
+        if ((guard.functionGuards & functionFlag) != 0) {
             revert CrossFunctionReentrancy(msg.sig);
         }
 
@@ -184,7 +184,7 @@ library ReentrancyGuardLib {
         AdvancedGuard storage guard,
         uint256 functionFlag
     ) internal view returns (bool) {
-        return guard.functionGuards & functionFlag != 0;
+        return (guard.functionGuards & functionFlag) != 0;
     }
 
     /**
@@ -196,7 +196,7 @@ library ReentrancyGuardLib {
         AdvancedGuard storage guard,
         uint256 disallowedFlags
     ) internal view {
-        if (guard.functionGuards & disallowedFlags != 0) {
+        if ((guard.functionGuards & disallowedFlags) != 0) {
             revert CrossFunctionReentrancy(msg.sig);
         }
     }
