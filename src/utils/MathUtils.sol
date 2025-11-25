@@ -388,6 +388,7 @@ library MathUtils {
         uint256 totalWeight
     ) internal pure returns (uint256) {
         if (totalWeight == 0) revert DivisionByZero();
+        if (weightA > totalWeight) revert InvalidInput();
         return (a * weightA + b * (totalWeight - weightA)) / totalWeight;
     }
 

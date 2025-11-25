@@ -540,6 +540,9 @@ contract IntentSettlement is
 
     function _calculateMinOutput(Intent calldata intent) internal view returns (uint256) {
         if (intent.intentType == IntentType.DUTCH) {
+            // Validate Dutch auction parameters
+            if (intent.startAmountOut < intent.minAmountOut) revert InvalidIntent();
+
             // Dutch auction: price improves over time for maker
             uint256 elapsed = block.timestamp > intent.deadline
                 ? dutchDecayPeriod

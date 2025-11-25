@@ -149,6 +149,9 @@ contract CrossChainDEXRouter is
     /// @dev Native token wrapper (WETH, WMATIC, etc.)
     address public wrappedNative;
 
+    /// @dev Maximum number of hops allowed in multi-hop swaps
+    uint256 public constant MAX_HOPS = 5;
+
     /*//////////////////////////////////////////////////////////////
                             INITIALIZATION
     //////////////////////////////////////////////////////////////*/
@@ -201,6 +204,7 @@ contract CrossChainDEXRouter is
 
         // Get best quote and execute
         SwapQuote memory quote = _getOptimalQuote(tokenIn, tokenOut, amountIn);
+        if (quote.routes.length == 0) revert InvalidRoute();
 
         // Check price impact
         _validatePriceImpact(tokenIn, tokenOut, amountIn, quote.amountOut);
@@ -219,6 +223,7 @@ contract CrossChainDEXRouter is
     {
         if (block.timestamp > params.deadline) revert DeadlineExpired();
         if (params.hops.length == 0) revert InvalidRoute();
+        if (params.hops.length > MAX_HOPS) revert InvalidRoute();
 
         // Transfer initial tokens
         IERC20(params.hops[0].tokenIn).safeTransferFrom(
@@ -300,6 +305,7 @@ contract CrossChainDEXRouter is
 
             // Get best route and execute swap internally (tokens already in contract)
             SwapQuote memory quote = _getOptimalQuote(params.tokenIn, bridgeToken, netAmount);
+            if (quote.routes.length == 0) revert InvalidRoute();
 
             // Validate price impact
             _validatePriceImpact(params.tokenIn, bridgeToken, netAmount, quote.amountOut);

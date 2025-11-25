@@ -332,11 +332,16 @@ contract SmartOracleAggregator is
         uint8 decimals;
 
         if (price.expo >= 0) {
+            // Validate positive exponent doesn't overflow
+            if (price.expo > 77) revert InvalidPrice(); // 10^77 is near uint256.max
             scaledPrice = uint256(uint64(price.price)) * (10 ** uint32(price.expo));
             decimals = 18;
         } else {
+            // Validate negative exponent fits in uint8
+            uint32 absExpo = uint32(-price.expo);
+            if (absExpo > 255) revert InvalidPrice();
             scaledPrice = uint256(uint64(price.price));
-            decimals = uint8(uint32(-price.expo));
+            decimals = uint8(absExpo);
         }
 
         data = PriceData({
