@@ -391,21 +391,19 @@ contract IntentSettlement is
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Cancel an intent (by maker)
-    /// @dev Requires the intent to have been previously seen (maker stored) or use cancelIntentWithProof
+    /// @dev Requires the intent to have been previously seen (maker stored), otherwise use cancelIntentWithProof
     function cancelIntent(bytes32 intentId) external {
         Fill storage fill = fills[intentId];
 
         // Only maker can cancel, and only if not filled
         if (fill.status == FillStatus.FILLED) revert IntentAlreadyFilled();
 
-        // Verify caller is the maker (if maker was stored from previous attempt)
+        // Verify caller is the maker - maker must have been stored from previous settlement attempt
         address storedMaker = intentMakers[intentId];
-        if (storedMaker != address(0) && storedMaker != msg.sender) revert Unauthorized();
-
-        // Store the cancelling address as maker if not already set
         if (storedMaker == address(0)) {
-            intentMakers[intentId] = msg.sender;
+            revert Unauthorized(); // Intent not seen yet - use cancelIntentWithProof instead
         }
+        if (storedMaker != msg.sender) revert Unauthorized();
 
         fill.status = FillStatus.CANCELLED;
 

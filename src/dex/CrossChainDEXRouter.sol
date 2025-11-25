@@ -298,17 +298,17 @@ contract CrossChainDEXRouter is
                 (address, uint256)
             );
 
-            // Approve and swap to bridge token
-            IERC20(params.tokenIn).forceApprove(address(this), netAmount);
+            // Get best route and execute swap internally (tokens already in contract)
+            SwapQuote memory quote = _getOptimalQuote(params.tokenIn, bridgeToken, netAmount);
 
-            bridgeAmount = this.swap(
-                params.tokenIn,
-                bridgeToken,
-                netAmount,
-                minBridgeAmount,
-                address(this),
-                block.timestamp + 300
-            );
+            // Validate price impact
+            _validatePriceImpact(params.tokenIn, bridgeToken, netAmount, quote.amountOut);
+
+            // Execute swap route
+            bridgeAmount = _executeSwapRoute(quote.routes[0], netAmount, address(this));
+
+            // Validate minimum output
+            if (bridgeAmount < minBridgeAmount) revert InsufficientOutput();
         }
 
         // Generate transaction ID
