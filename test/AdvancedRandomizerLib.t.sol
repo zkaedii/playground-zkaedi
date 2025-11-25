@@ -839,4 +839,149 @@ contract AdvancedRandomizerLibTest is Test {
         uint256 random = AdvancedRandomizerLib.generate(engine, TEST_SEED, WAD);
         assertGt(random, 0);
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //                         ADDITIONAL EDGE CASE TESTS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function test_generateInRange_FullRange() public pure {
+        AdvancedRandomizerLib.ChaosEngine memory engine =
+            AdvancedRandomizerLib.initializeChaosEngine(TEST_SEED);
+
+        // Test full uint256 range (previously would overflow)
+        uint256 random = AdvancedRandomizerLib.generateInRange(
+            engine, TEST_SEED, WAD, 0, type(uint256).max
+        );
+        // Should not revert and should produce output
+        assertTrue(random >= 0, "Should handle full range");
+    }
+
+    function test_generateInRange_NearMaxRange() public pure {
+        AdvancedRandomizerLib.ChaosEngine memory engine =
+            AdvancedRandomizerLib.initializeChaosEngine(TEST_SEED);
+
+        // Test near-max range
+        uint256 random = AdvancedRandomizerLib.generateInRange(
+            engine, TEST_SEED, WAD, 1, type(uint256).max
+        );
+        assertGe(random, 1, "Should be >= min");
+    }
+
+    function test_generateInRange_RejectionSamplingBounded() public pure {
+        AdvancedRandomizerLib.ChaosEngine memory engine =
+            AdvancedRandomizerLib.initializeChaosEngine(TEST_SEED);
+
+        // Small range that would cause many rejections
+        // The bounded loop should prevent infinite gas consumption
+        for (uint256 i = 0; i < 100; i++) {
+            uint256 random = AdvancedRandomizerLib.generateInRange(
+                engine, i, i * WAD, 0, 2
+            );
+            assertLe(random, 2, "Should be in range");
+        }
+    }
+
+    function test_weightedSelect_LargeWeights() public pure {
+        AdvancedRandomizerLib.ChaosEngine memory engine =
+            AdvancedRandomizerLib.initializeChaosEngine(TEST_SEED);
+
+        // Test with large but non-overflowing weights
+        uint256[] memory weights = new uint256[](3);
+        weights[0] = type(uint256).max / 4;
+        weights[1] = type(uint256).max / 4;
+        weights[2] = type(uint256).max / 4;
+
+        uint256 selected = AdvancedRandomizerLib.weightedSelect(engine, TEST_SEED, weights);
+        assertLt(selected, 3, "Should select valid index");
+    }
+
+    function test_selectUnique_SmallKLargeN() public pure {
+        AdvancedRandomizerLib.ChaosEngine memory engine =
+            AdvancedRandomizerLib.initializeChaosEngine(TEST_SEED);
+
+        // Test optimized path: small k relative to n
+        uint256[] memory selected = AdvancedRandomizerLib.selectUnique(engine, TEST_SEED, 100, 5);
+        assertEq(selected.length, 5, "Should select 5 items");
+
+        // Verify all are unique and valid
+        for (uint256 i = 0; i < 5; i++) {
+            assertLt(selected[i], 100, "Should be valid index");
+            for (uint256 j = i + 1; j < 5; j++) {
+                assertTrue(selected[i] != selected[j], "Should be unique");
+            }
+        }
+    }
+
+    function test_analyzeQuality_RunsTestCorrect() public pure {
+        // Create a sample with known runs pattern
+        uint256[] memory samples = new uint256[](10);
+        // Pattern: 1, 3, 2, 4, 3, 5, 4, 6, 5, 7
+        // Runs: ↑, ↓, ↑, ↓, ↑, ↓, ↑, ↓, ↑
+        // This should give us many runs (direction changes)
+        samples[0] = 1;
+        samples[1] = 3;
+        samples[2] = 2;
+        samples[3] = 4;
+        samples[4] = 3;
+        samples[5] = 5;
+        samples[6] = 4;
+        samples[7] = 6;
+        samples[8] = 5;
+        samples[9] = 7;
+
+        AdvancedRandomizerLib.QualityMetrics memory metrics =
+            AdvancedRandomizerLib.analyzeQuality(samples);
+
+        // Should detect multiple runs (alternating up/down pattern)
+        assertGt(metrics.runsCount, 5, "Should detect multiple runs");
+    }
+
+    function test_analyzeQuality_MonotonicSequence() public pure {
+        // Create a strictly increasing sequence - should have only 1 run
+        uint256[] memory samples = new uint256[](10);
+        for (uint256 i = 0; i < 10; i++) {
+            samples[i] = i;
+        }
+
+        AdvancedRandomizerLib.QualityMetrics memory metrics =
+            AdvancedRandomizerLib.analyzeQuality(samples);
+
+        // Monotonic sequence should have exactly 1 run
+        assertEq(metrics.runsCount, 1, "Monotonic should have 1 run");
+    }
+
+    function test_powSafe_OperatorPrecedence() public pure {
+        // Verify that the operator precedence fix works correctly
+        // This tests that (exp & 1) == 1 is evaluated correctly
+
+        // Test with known values
+        AdvancedRandomizerLib.ChaosEngine memory engine =
+            AdvancedRandomizerLib.initializeChaosEngine(TEST_SEED);
+
+        // The Zkaedi signature uses _powSafe internally
+        AdvancedRandomizerLib.ZkaediSignature memory sig =
+            AdvancedRandomizerLib.computeZkaediSignature(engine, TEST_SEED);
+
+        // phiPower should be PHI^n where n is active oscillators (8)
+        // PHI ≈ 1.618, so PHI^8 ≈ 46.98
+        assertGt(sig.phiPower, 40 * WAD, "Phi power should be > 40");
+        assertLt(sig.phiPower, 60 * WAD, "Phi power should be < 60");
+    }
+
+    function testFuzz_generateInRange_NeverOverflows(
+        uint256 seed,
+        uint256 t,
+        uint256 min,
+        uint256 max
+    ) public pure {
+        vm.assume(min <= max);
+
+        AdvancedRandomizerLib.ChaosEngine memory engine =
+            AdvancedRandomizerLib.initializeChaosEngine(seed);
+
+        // Should never revert even with max values
+        uint256 result = AdvancedRandomizerLib.generateInRange(engine, seed, t, min, max);
+        assertGe(result, min);
+        assertLe(result, max);
+    }
 }

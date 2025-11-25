@@ -4,8 +4,18 @@ pragma solidity ^0.8.20;
 /**
  * @title AdvancedRandomizerLib
  * @author zkaedi
- * @notice Epic truly random randomizer based on the chaos engine formula
- * @dev Implements the comprehensive Ĥ(t) randomization system:
+ * @notice Deterministic pseudo-random number generator based on chaos theory
+ * @dev Implements the comprehensive Ĥ(t) randomization system.
+ *
+ *      SECURITY WARNING: This is NOT cryptographically secure. It is a deterministic
+ *      PRNG that produces predictable outputs given the same seed. Do NOT use for:
+ *      - Lottery/gambling with real value at stake
+ *      - Cryptographic key generation
+ *      - Any application where prediction resistance is required
+ *
+ *      For truly unpredictable randomness, use Chainlink VRF or similar oracle solutions.
+ *
+ *      Mathematical formula:
  *
  *      Ĥ(t) = Σᵢ[Aᵢ(t)·sin(Bᵢ(t)·t + φᵢ) + Cᵢ·e^(-Dᵢ·t)]
  *           + ∫₀ᵗ softplus(a·(x-x₀)² + b)·f(x)·g'(x)dx
@@ -374,12 +384,26 @@ library AdvancedRandomizerLib {
         if (min == max) return min;
 
         uint256 random = generate(engine, seed, t);
-        uint256 range = max - min + 1;
+
+        // Handle special case where range spans entire uint256
+        // (max - min + 1 would overflow)
+        if (max == type(uint256).max && min == 0) {
+            return random; // Full range, just return the random value
+        }
+
+        // Safe range calculation (won't overflow since we checked above)
+        uint256 range;
+        unchecked {
+            range = max - min + 1;
+        }
 
         // Use rejection sampling for unbiased distribution
+        // Limit iterations to prevent infinite loops (statistically very unlikely to hit)
         uint256 maxUnbiased = type(uint256).max - (type(uint256).max % range);
-        while (random >= maxUnbiased) {
-            random = uint256(keccak256(abi.encodePacked(random)));
+        uint256 maxIterations = 10;
+
+        for (uint256 i = 0; i < maxIterations && random >= maxUnbiased; i++) {
+            random = uint256(keccak256(abi.encodePacked(random, i)));
         }
 
         return min + (random % range);
@@ -963,7 +987,7 @@ library AdvancedRandomizerLib {
 
         unchecked {
             while (exp > 0) {
-                if (exp & 1 == 1) {
+                if ((exp & 1) == 1) {
                     // Check for overflow before multiplication
                     if (result > MAX_SAFE_MUL || b > MAX_SAFE_MUL) {
                         return type(uint256).max / 2;
@@ -1077,23 +1101,20 @@ library AdvancedRandomizerLib {
     ) internal pure returns (uint256) {
         if (weights.length == 0) revert InvalidParameter();
 
+        // Use checked arithmetic to detect overflow in weight sum
         uint256 totalWeight;
-        unchecked {
-            for (uint256 i = 0; i < weights.length; i++) {
-                totalWeight += weights[i];
-            }
+        for (uint256 i = 0; i < weights.length; i++) {
+            totalWeight += weights[i]; // Will revert on overflow
         }
         if (totalWeight == 0) revert ZeroWeights();
 
         uint256 random = generate(engine, seed, WAD) % totalWeight;
         uint256 cumulative;
 
-        unchecked {
-            for (uint256 i = 0; i < weights.length; i++) {
-                cumulative += weights[i];
-                if (random < cumulative) {
-                    return i;
-                }
+        for (uint256 i = 0; i < weights.length; i++) {
+            cumulative += weights[i];
+            if (random < cumulative) {
+                return i;
             }
         }
 
@@ -1129,6 +1150,8 @@ library AdvancedRandomizerLib {
 
     /**
      * @notice Select k unique random items from n
+     * @dev Uses optimized approach: partial Fisher-Yates for k <= n/2,
+     *      rejection sampling for very small k relative to n
      */
     function selectUnique(
         ChaosEngine memory engine,
@@ -1139,12 +1162,46 @@ library AdvancedRandomizerLib {
         if (k > n) revert InvalidParameter();
         if (k == 0) return new uint256[](0);
         if (k > MAX_BATCH_SIZE) revert BatchSizeTooLarge();
+        if (n > MAX_BATCH_SIZE) revert BatchSizeTooLarge();
 
-        // Use partial Fisher-Yates
-        uint256[] memory shuffled = shuffle(engine, seed, n);
         selected = new uint256[](k);
 
-        unchecked {
+        // For small k relative to n, use rejection sampling (more efficient)
+        if (k <= 10 && n >= k * 4) {
+            // Track selected values using a simple array search (efficient for small k)
+            uint256 count = 0;
+            uint256 attempts = 0;
+            uint256 maxAttempts = k * 10; // Prevent infinite loops
+
+            while (count < k && attempts < maxAttempts) {
+                uint256 candidate = generate(engine, uint256(keccak256(abi.encodePacked(seed, attempts))), attempts * WAD) % n;
+
+                // Check if already selected
+                bool isDuplicate = false;
+                for (uint256 j = 0; j < count; j++) {
+                    if (selected[j] == candidate) {
+                        isDuplicate = true;
+                        break;
+                    }
+                }
+
+                if (!isDuplicate) {
+                    selected[count] = candidate;
+                    count++;
+                }
+                attempts++;
+            }
+
+            // If rejection sampling didn't complete, fall back to shuffle
+            if (count < k) {
+                uint256[] memory shuffled = shuffle(engine, seed, n);
+                for (uint256 i = 0; i < k; i++) {
+                    selected[i] = shuffled[i];
+                }
+            }
+        } else {
+            // Use partial Fisher-Yates for larger k
+            uint256[] memory shuffled = shuffle(engine, seed, n);
             for (uint256 i = 0; i < k; i++) {
                 selected[i] = shuffled[i];
             }
@@ -1232,11 +1289,16 @@ library AdvancedRandomizerLib {
         uint256 n = samples.length;
 
         // Count runs for runs test
+        // A run is a consecutive sequence of increasing or decreasing values
+        // We count direction changes (rising to falling or vice versa)
         uint256 runsCount = 1;
-        unchecked {
-            for (uint256 i = 1; i < n; i++) {
-                if ((samples[i] > samples[i-1]) != (i > 1 && samples[i-1] > samples[i-2])) {
+        if (n > 1) {
+            bool wasIncreasing = samples[1] > samples[0];
+            for (uint256 i = 2; i < n; i++) {
+                bool isIncreasing = samples[i] > samples[i-1];
+                if (isIncreasing != wasIncreasing) {
                     runsCount++;
+                    wasIncreasing = isIncreasing;
                 }
             }
         }
