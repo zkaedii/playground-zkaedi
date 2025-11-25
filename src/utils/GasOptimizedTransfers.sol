@@ -595,7 +595,9 @@ library GasOptimizedTransfers {
                 let success := call(gas(), token, 0, ptr, 0x44, ptr, 0x20)
 
                 if success {
-                    if returndatasize() {
+                    let retSize := returndatasize()
+                    if retSize {
+                        if lt(retSize, 0x20) { success := 0 }
                         if iszero(mload(ptr)) { success := 0 }
                     }
                 }
@@ -660,7 +662,10 @@ library GasOptimizedTransfers {
 
                 if success {
                     succeeded := add(succeeded, 1)
-                    totalSent := add(totalSent, amt)
+                    // Overflow check for totalSent accumulation
+                    let newTotal := add(totalSent, amt)
+                    if lt(newTotal, totalSent) { revert(0, 0) }
+                    totalSent := newTotal
                 }
             }
         }
@@ -715,13 +720,20 @@ library GasOptimizedTransfers {
 
                 if or(iszero(to), iszero(amt)) { continue }
 
-                // Forward remaining gas minus reserve
-                let gasToUse := sub(gas(), GAS_RESERVE)
+                // Forward remaining gas minus reserve (with underflow protection)
+                let gasAvailable := gas()
+                let gasToUse := gasAvailable
+                if gt(gasAvailable, GAS_RESERVE) {
+                    gasToUse := sub(gasAvailable, GAS_RESERVE)
+                }
                 let success := call(gasToUse, to, amt, 0, 0, 0, 0)
 
                 if success {
                     succeeded := add(succeeded, 1)
-                    totalSent := add(totalSent, amt)
+                    // Overflow check for totalSent accumulation
+                    let newTotal := add(totalSent, amt)
+                    if lt(newTotal, totalSent) { revert(0, 0) }
+                    totalSent := newTotal
                 }
             }
         }
@@ -777,7 +789,10 @@ library GasOptimizedTransfers {
 
                 if success {
                     succeeded := add(succeeded, 1)
-                    totalSent := add(totalSent, amt)
+                    // Overflow check for totalSent accumulation
+                    let newTotal := add(totalSent, amt)
+                    if lt(newTotal, totalSent) { revert(0, 0) }
+                    totalSent := newTotal
                 }
             }
         }
